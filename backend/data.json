@@ -1,0 +1,22 @@
+[
+  { "id": "Q1", "name": "Charlemagne", "wpTitle": "Charlemagne", "type": "person", "start_year": 742, "end_year": 814, "lat": 48.8566, "lon": 2.3522, "importance_score": 200 },
+  { "id": "Q2", "name": "Julius Caesar", "wpTitle": "Julius_Caesar", "type": "person", "start_year": -100, "end_year": -44, "lat": 41.8902, "lon": 12.4922, "importance_score": 195 },
+  { "id": "Q3", "name": "Jayavarman VII", "wpTitle": "Jayavarman_VII", "type": "person", "start_year": 1125, "end_year": 1218, "lat": 13.4125, "lon": 103.8670, "importance_score": 180 },
+  { "id": "Q4", "name": "Napoleon", "wpTitle": "Napoleon", "type": "person", "start_year": 1769, "end_year": 1821, "lat": 41.9267, "lon": 8.7369, "importance_score": 198 },
+  { "id": "Q5", "name": "Leonardo da Vinci", "wpTitle": "Leonardo_da_Vinci", "type": "person", "start_year": 1452, "end_year": 1519, "lat": 43.7667, "lon": 11.25, "importance_score": 199 },
+  { "id": "Q6", "name": "Confucius", "wpTitle": "Confucius", "type": "person", "start_year": -551, "end_year": -479, "lat": 35.59, "lon": 116.98, "importance_score": 190 },
+  { "id": "Q7", "name": "Cleopatra", "wpTitle": "Cleopatra", "type": "person", "start_year": -69, "end_year": -30, "lat": 31.2001, "lon": 29.9187, "importance_score": 185 },
+  { "id": "Q8", "name": "Albert Einstein", "wpTitle": "Albert_Einstein", "type": "person", "start_year": 1879, "end_year": 1955, "lat": 48.4, "lon": 9.9833, "importance_score": 210 },
+  { "id": "Q101", "name": "French Revolution", "wpTitle": "French_Revolution", "type": "event", "start_year": 1789, "end_year": 1799, "lat": 48.8566, "lon": 2.3522, "importance_score": 190 },
+  { "id": "Q102", "name": "Fall of Rome", "wpTitle": "Fall_of_the_Western_Roman_Empire", "type": "event", "start_year": 395, "end_year": 476, "lat": 41.8902, "lon": 12.4922, "importance_score": 185 },
+  { "id": "Q103", "name": "Black Death", "wpTitle": "Black_Death", "type": "event", "start_year": 1346, "end_year": 1353, "lat": 48.0, "lon": 15.0, "importance_score": 195 },
+  { "id": "Q104", "name": "Great Pyramid", "wpTitle": "Great_Pyramid_of_Giza", "type": "event", "start_year": -2580, "end_year": -2560, "lat": 29.9792, "lon": 31.1342, "importance_score": 199 },
+  { "id": "Q105", "name": "Alexander the Great", "wpTitle": "Alexander_the_Great", "type": "person", "start_year": -356, "end_year": -323, "lat": 40.75, "lon": 22.51, "importance_score": 197 },
+  { "id": "Q106", "name": "Magna Carta Signing", "wpTitle": "Magna_Carta", "type": "event", "start_year": 1215, "end_year": 1215, "lat": 51.4448, "lon": -0.5652, "importance_score": 175 },
+  { "id": "Q107", "name": "Christopher Columbus", "wpTitle": "Christopher_Columbus", "type": "person", "start_year": 1451, "end_year": 1506, "lat": 44.4071, "lon": 8.934, "importance_score": 188 },
+  { "id": "Q108", "name": "Industrial Revolution", "wpTitle": "Industrial_Revolution", "type": "event", "start_year": 1760, "end_year": 1840, "lat": 53.4808, "lon": -2.2426, "importance_score": 192 },
+  { "id": "Q109", "name": "Cyrus the Great", "wpTitle": "Cyrus_the_Great", "type": "person", "start_year": -600, "end_year": -530, "lat": 30.19, "lon": 53.16, "importance_score": 170 },
+  { "id": "Q110", "name": "Hammurabi", "wpTitle": "Hammurabi", "type": "person", "start_year": -1810, "end_year": -1750, "lat": 32.46, "lon": 44.42, "importance_score": 165 },
+  { "id": "Q111", "name": "Gutenberg Bible", "wpTitle": "Gutenberg_Bible", "type": "event", "start_year": 1450, "end_year": 1455, "lat": 50.0, "lon": 8.27, "importance_score": 180 },
+  { "id": "Q112", "name": "Genghis Khan", "wpTitle": "Genghis_Khan", "type": "person", "start_year": 1162, "end_year": 1227, "lat": 47.92, "lon": 106.92, "importance_score": 194 }
+]
