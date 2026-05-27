@@ -119,6 +119,43 @@ const CoincidenceCard = ({ pair, onDismiss }) => {
   );
 };
 
+const YearSnapshotPanel = ({ points, year, onSelect, onClose }) => {
+  const notable = [...points]
+    .filter(p => p.thumbnailUrl)
+    .sort((a, b) => (b.importance_score || 0) - (a.importance_score || 0))
+    .slice(0, 24);
+
+  const yearLabel = year < 0 ? `${Math.abs(year)} BCE` : `${year} CE`;
+
+  return (
+    <div className="snapshot-panel animate-slide-in-left">
+      <div className="snapshot-header">
+        <span className="snapshot-title">Alive in {yearLabel}</span>
+        <button className="snapshot-close" onClick={onClose}>&#x2715;</button>
+      </div>
+      <div className="snapshot-count">{points.length} figures on record</div>
+      <div className="snapshot-grid">
+        {notable.map(p => (
+          <div key={p.id} className="snapshot-person" onClick={() => onSelect(p)}
+            style={{ '--dot-color': CATEGORY_COLORS[p.category] || DEFAULT_DOT_COLOR }}>
+            <div className="snapshot-avatar">
+              <img src={p.thumbnailUrl} alt={p.name} />
+              {p.category && (
+                <span className="snapshot-cat-dot" style={{ background: CATEGORY_COLORS[p.category] || DEFAULT_DOT_COLOR }} />
+              )}
+            </div>
+            <div className="snapshot-info">
+              <strong>{p.name}</strong>
+              <span>{formatYear(p.start_year)}{p.end_year ? ` to ${formatYear(p.end_year)}` : ''}</span>
+              {p.category && <span className="snapshot-cat">{p.category}</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const EntityCard = ({ entity }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -361,11 +398,16 @@ const WorldMap = ({ points, onMapClick, selectedPoint, syncActive, onPointClick,
     return x >= xMin && x <= xMax && y >= yMin && y <= yMax;
   };
 
-  const arcPath = coincidencePair && !syncActive ? (() => {
+  const beamData = coincidencePair && !syncActive ? (() => {
     const { a, b } = coincidencePair;
     const cx = (a.x + b.x) / 2;
     const cy = Math.max(2, (a.y + b.y) / 2 - 22);
-    return `M ${a.x} ${a.y} Q ${cx} ${cy} ${b.x} ${b.y}`;
+    return {
+      d: `M ${a.x} ${a.y} Q ${cx} ${cy} ${b.x} ${b.y}`,
+      colA: CATEGORY_COLORS[a.category] || DEFAULT_DOT_COLOR,
+      colB: CATEGORY_COLORS[b.category] || DEFAULT_DOT_COLOR,
+      x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+    };
   })() : null;
 
   return (
@@ -390,9 +432,30 @@ const WorldMap = ({ points, onMapClick, selectedPoint, syncActive, onPointClick,
       >
         <div className="map-bg" />
 
-        {arcPath && (
+        {beamData && (
           <svg className="coincidence-arc-layer" viewBox="0 0 100 100" preserveAspectRatio="none">
-            <path d={arcPath} className="coincidence-arc-path" />
+            <defs>
+              <linearGradient id="cbeam-grad" gradientUnits="userSpaceOnUse"
+                x1={beamData.x1} y1={beamData.y1} x2={beamData.x2} y2={beamData.y2}>
+                <stop offset="0%" stopColor={beamData.colA} stopOpacity="0.9" />
+                <stop offset="38%" stopColor={beamData.colA} stopOpacity="0" />
+                <stop offset="62%" stopColor={beamData.colB} stopOpacity="0" />
+                <stop offset="100%" stopColor={beamData.colB} stopOpacity="0.9" />
+              </linearGradient>
+              <linearGradient id="cbeam-glow-grad" gradientUnits="userSpaceOnUse"
+                x1={beamData.x1} y1={beamData.y1} x2={beamData.x2} y2={beamData.y2}>
+                <stop offset="0%" stopColor={beamData.colA} stopOpacity="0.35" />
+                <stop offset="50%" stopColor={beamData.colA} stopOpacity="0" />
+                <stop offset="100%" stopColor={beamData.colB} stopOpacity="0.35" />
+              </linearGradient>
+              <filter id="cbeam-blur">
+                <feGaussianBlur stdDeviation="0.9" />
+              </filter>
+            </defs>
+            <path d={beamData.d} fill="none" stroke="url(#cbeam-glow-grad)"
+              strokeWidth="4" filter="url(#cbeam-blur)" className="coincidence-beam-glow" />
+            <path d={beamData.d} fill="none" stroke="url(#cbeam-grad)"
+              strokeWidth="0.45" className="coincidence-beam-path" />
           </svg>
         )}
 
@@ -483,6 +546,7 @@ export default function App() {
   const [coincidenceIndex, setCoincidenceIndex] = useState(0);
   const [selectedCoincidence, setSelectedCoincidence] = useState(null);
   const [zoneSelection, setZoneSelection] = useState(null);
+  const [showSnapshot, setShowSnapshot] = useState(false);
   const coincidencePair = coincidences[coincidenceIndex] || null;
 
   // Debounce displayYear -> year so API calls don't fire on every slider tick
@@ -615,6 +679,15 @@ export default function App() {
         />
       </div>
 
+      {showSnapshot && !syncMode && (
+        <YearSnapshotPanel
+          points={historicalPoints}
+          year={displayYear}
+          onSelect={p => { startSynchronicity(p); setShowSnapshot(false); }}
+          onClose={() => setShowSnapshot(false)}
+        />
+      )}
+
       {selectedCoincidence && (
         <CoincidenceCard
           pair={selectedCoincidence}
@@ -627,6 +700,15 @@ export default function App() {
           {!syncMode && <Search onSelect={startSynchronicity} />}
           <div className="year-row">
             <h1>{displayYear < 0 ? `${Math.abs(displayYear)} BCE` : `${displayYear} CE`}</h1>
+            {!syncMode && historicalPoints.length > 0 && (
+              <button
+                className={`snapshot-toggle-btn${showSnapshot ? ' active' : ''}`}
+                title="Who was alive this year?"
+                onClick={() => setShowSnapshot(s => !s)}
+              >
+                {historicalPoints.length} alive
+              </button>
+            )}
             {!syncMode && coincidences.length > 1 && (
               <button
                 className={`shuffle-btn${zoneSelection ? ' zone-active' : ''}`}

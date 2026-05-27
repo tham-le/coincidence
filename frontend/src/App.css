@@ -1031,7 +1031,7 @@ body, html, #root {
   50% { box-shadow: 0 0 0 8px rgba(212, 160, 23, 0), 0 4px 14px rgba(0, 0, 0, 0.25); }
 }
 
-/* Coincidence arc SVG */
+/* Coincidence beam SVG */
 .coincidence-arc-layer {
   position: absolute;
   inset: 0;
@@ -1041,23 +1041,18 @@ body, html, #root {
   z-index: 4;
 }
 
-.coincidence-arc-path {
-  fill: none;
-  stroke: var(--gold);
-  stroke-width: 0.4;
-  stroke-dasharray: 2.5 1.5;
-  stroke-dashoffset: 200;
+.coincidence-beam-path,
+.coincidence-beam-glow {
   opacity: 0;
-  animation: arc-draw 1.2s ease forwards, arc-pulse 3s ease-in-out 1.2s infinite;
+  animation: beam-fade-in 0.9s ease forwards;
 }
 
-@keyframes arc-draw {
-  to { stroke-dashoffset: 0; opacity: 0.55; }
+.coincidence-beam-glow {
+  animation-duration: 1.1s;
 }
 
-@keyframes arc-pulse {
-  0%, 100% { opacity: 0.25; }
-  50% { opacity: 0.6; }
+@keyframes beam-fade-in {
+  to { opacity: 1; }
 }
 
 /* Coincidence card */
@@ -1159,6 +1154,167 @@ body, html, #root {
   color: var(--gold);
   opacity: 0.4;
   flex-shrink: 0;
+}
+
+/* Snapshot toggle button */
+.snapshot-toggle-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 0.62rem;
+  padding: 0.22rem 0.55rem;
+  border-radius: 20px;
+  cursor: pointer;
+  letter-spacing: 0.4px;
+  transition: all 0.2s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.snapshot-toggle-btn:hover,
+.snapshot-toggle-btn.active {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+}
+
+/* Year snapshot left panel */
+.snapshot-panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 300px;
+  height: 100vh;
+  background: var(--panel-bg);
+  backdrop-filter: blur(24px);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+  overflow: hidden;
+}
+
+@keyframes slide-in-left {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(0); }
+}
+
+.animate-slide-in-left { animation: slide-in-left 0.28s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards; }
+
+.snapshot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.1rem 1.1rem 0.5rem;
+  flex-shrink: 0;
+}
+
+.snapshot-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.3px;
+}
+
+.snapshot-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.snapshot-close:hover { opacity: 1; }
+
+.snapshot-count {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  padding: 0 1.1rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.snapshot-grid {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.snapshot-grid::-webkit-scrollbar { width: 3px; }
+.snapshot-grid::-webkit-scrollbar-track { background: transparent; }
+.snapshot-grid::-webkit-scrollbar-thumb { background: #cbd5e0; border-radius: 2px; }
+
+.snapshot-person {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.snapshot-person:hover {
+  background: rgba(0,0,0,0.04);
+}
+
+.snapshot-avatar {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.snapshot-avatar img {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1.5px solid var(--dot-color, var(--gold));
+  display: block;
+}
+
+.snapshot-cat-dot {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid #fff;
+}
+
+.snapshot-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.snapshot-info strong {
+  font-size: 0.78rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.snapshot-info span {
+  font-size: 0.62rem;
+  color: var(--text-dim);
+}
+
+.snapshot-cat {
+  font-size: 0.56rem !important;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 700;
+  color: var(--dot-color, var(--gold)) !important;
 }
 
 .coincidence-text {
