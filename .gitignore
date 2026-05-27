@@ -1,0 +1,5 @@
+node_modules/
+*.db
+frontend/build/
+frontend/frontend_log.txt
+package-lock.json

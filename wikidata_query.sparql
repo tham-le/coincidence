@@ -1,0 +1,26 @@
+SELECT ?item ?itemLabel ?type ?lat ?lon ?start ?end ?sitelinks WHERE {
+  {
+    ?item wdt:P31/wdt:P279* wd:Q5 . # Human
+    BIND("person" AS ?type)
+    OPTIONAL { ?item wdt:P569 ?start . } # Birth
+    OPTIONAL { ?item wdt:P570 ?end . }   # Death
+    ?item wdt:P19/wdt:P625 ?coords . # Birth place coordinates
+  } UNION {
+    ?item wdt:P31/wdt:P279* wd:Q1190554 . # Historical Event
+    BIND("event" AS ?type)
+    OPTIONAL { ?item wdt:P580 ?start . } # Start
+    OPTIONAL { ?item wdt:P582 ?end . }   # End
+    ?item wdt:P625 ?coords . # Event coordinates
+  }
+  
+  # Coordinates parsing
+  BIND(geof:latitude(?coords) AS ?lat)
+  BIND(geof:longitude(?coords) AS ?lon)
+  
+  # Importance filter
+  ?item wikibase:sitelinks ?sitelinks .
+  FILTER(?sitelinks > 40)
+  
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en". }
+}
+LIMIT 1000
