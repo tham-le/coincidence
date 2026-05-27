@@ -14,7 +14,7 @@ async function sparql(query) {
 function insertRows(rows, type, category) {
     return new Promise((resolve) => {
         db.serialize(() => {
-            const stmt = db.prepare("INSERT OR REPLACE INTO historical_entities VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+            const stmt = db.prepare("INSERT OR REPLACE INTO historical_entities VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
             let count = 0;
             rows.forEach(b => {
                 try {
@@ -43,7 +43,8 @@ function insertRows(rows, type, category) {
                         parseFloat(b.lon.value),
                         parseInt(b.sitelinks ? b.sitelinks.value : 0),
                         b.img ? b.img.value + '?width=400' : null,
-                        category || type
+                        category || type,
+                        null
                     );
                     count++;
                 } catch (err) {}
