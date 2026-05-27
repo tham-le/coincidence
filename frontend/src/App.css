@@ -311,11 +311,11 @@ body, html, #root {
 .sparkline-container-wrapper {
   position: relative;
   width: 100%;
-  margin-top: 1rem;
+  margin-top: 0.4rem;
 }
 
 .sparkline-container {
-  height: 40px;
+  height: 28px;
   width: 100%;
   opacity: 0.8;
   pointer-events: none;
@@ -351,19 +351,20 @@ body, html, #root {
 /* Chaos UI (bottom center panel) */
 .chaos-ui {
   position: absolute;
-  bottom: 8%;
+  bottom: 3%;
   left: 50%;
   transform: translateX(-50%);
-  width: 95%;
-  max-width: 650px;
+  width: 90%;
+  max-width: 560px;
   text-align: center;
   z-index: 100;
-  background: var(--panel-bg);
-  padding: 1.25rem 2.5rem;
-  border-radius: 20px;
-  backdrop-filter: blur(20px);
-  border: 1px solid var(--border);
-  box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+  background: rgba(255, 255, 255, 0.6);
+  padding: 0.65rem 1.75rem 0.8rem;
+  border-radius: 16px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
   transition: all 0.4s cubic-bezier(0.165, 0.84, 0.44, 1);
 }
 
@@ -431,7 +432,7 @@ body, html, #root {
 .search-container {
   position: relative;
   width: 100%;
-  margin: 1.5rem 0;
+  margin: 0.5rem 0 0.4rem;
 }
 
 .search-input {
@@ -537,11 +538,10 @@ body, html, #root {
 }
 
 .chaos-header h1 {
-  font-size: 3.5rem;
+  font-size: 2.2rem;
   margin: 0;
   color: var(--text);
-  letter-spacing: -1px;
-  text-shadow: 0 0 20px rgba(0, 0, 0, 0.05);
+  letter-spacing: -0.5px;
   line-height: 1.1;
 }
 
@@ -564,10 +564,10 @@ body, html, #root {
   width: 100%;
   appearance: none;
   -webkit-appearance: none;
-  height: 4px;
+  height: 3px;
   border-radius: 2px;
   outline: none;
-  margin-top: 1.25rem;
+  margin-top: 0.5rem;
   display: block;
   cursor: pointer;
   transition: height 0.15s ease;
