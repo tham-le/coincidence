@@ -7,55 +7,55 @@ const SPARQL_URL = 'https://query.wikidata.org/sparql';
 const HEADERS = { 'User-Agent': 'GlobalSynchronicityApp/2.0 (contact: user@example.com)' };
 
 const OCC_TO_CATEGORY = {
-    Q82955:    'Leaders',      // politician
-    Q15712165: 'Leaders',      // political figure
-    Q484188:   'Leaders',      // monarch
-    Q30461:    'Leaders',      // president
-    Q1097498:  'Leaders',      // head of state
-    Q372436:   'Leaders',      // statesperson
-    Q16947657: 'Leaders',      // prime minister
-    Q3527302:  'Leaders',      // revolutionary
-    Q189348:   'Leaders',      // diplomat
+    Q82955:    'Leaders',
+    Q15712165: 'Leaders',
+    Q484188:   'Leaders',
+    Q30461:    'Leaders',
+    Q1097498:  'Leaders',
+    Q372436:   'Leaders',
+    Q16947657: 'Leaders',
+    Q3527302:  'Leaders',
+    Q189348:   'Leaders',
 
-    Q901:      'Scientists',   // scientist
-    Q170790:   'Scientists',   // mathematician
-    Q11063:    'Scientists',   // astronomer
-    Q169470:   'Scientists',   // physicist
-    Q593644:   'Scientists',   // chemist
-    Q3621491:  'Scientists',   // biologist
-    Q864503:   'Scientists',   // botanist
-    Q2110551:  'Scientists',   // inventor
-    Q205375:   'Scientists',   // engineer
-    Q2500638:  'Scientists',   // natural philosopher
-    Q1650915:  'Scientists',   // researcher
+    Q901:      'Scientists',
+    Q170790:   'Scientists',
+    Q11063:    'Scientists',
+    Q169470:   'Scientists',
+    Q593644:   'Scientists',
+    Q3621491:  'Scientists',
+    Q864503:   'Scientists',
+    Q2110551:  'Scientists',
+    Q205375:   'Scientists',
+    Q2500638:  'Scientists',
+    Q1650915:  'Scientists',
 
-    Q483501:   'Artists',      // musician
-    Q49757:    'Artists',      // poet
-    Q482980:   'Artists',      // author
-    Q36180:    'Artists',      // writer
-    Q1028181:  'Artists',      // painter
-    Q6625963:  'Artists',      // novelist
-    Q33999:    'Artists',      // actor
-    Q177220:   'Artists',      // singer
-    Q36834:    'Artists',      // composer
-    Q1281618:  'Artists',      // sculptor
-    Q486748:   'Artists',      // architect
-    Q33231:    'Artists',      // photographer
+    Q483501:   'Artists',
+    Q49757:    'Artists',
+    Q482980:   'Artists',
+    Q36180:    'Artists',
+    Q1028181:  'Artists',
+    Q6625963:  'Artists',
+    Q33999:    'Artists',
+    Q177220:   'Artists',
+    Q36834:    'Artists',
+    Q1281618:  'Artists',
+    Q486748:   'Artists',
+    Q33231:    'Artists',
 
-    Q4964182:  'Philosophers', // philosopher
-    Q1234713:  'Philosophers', // theologian
-    Q2259532:  'Philosophers', // ethicist
-    Q15995642: 'Philosophers', // logician
+    Q4964182:  'Philosophers',
+    Q1234713:  'Philosophers',
+    Q2259532:  'Philosophers',
+    Q15995642: 'Philosophers',
 
-    Q189290:   'Military',     // military officer
-    Q47064:    'Military',     // military personnel
-    Q71032:    'Military',     // general
-    Q10418691: 'Military',     // admiral
-    Q15978655: 'Military',     // military commander
+    Q189290:   'Military',
+    Q47064:    'Military',
+    Q71032:    'Military',
+    Q10418691: 'Military',
+    Q15978655: 'Military',
 
-    Q13582652: 'Explorers',    // explorer
-    Q4773904:  'Explorers',    // adventurer
-    Q1371378:  'Explorers',    // traveler
+    Q13582652: 'Explorers',
+    Q4773904:  'Explorers',
+    Q1371378:  'Explorers',
 };
 
 function inferCategory(occUri) {
@@ -100,11 +100,14 @@ function insertRows(rows) {
                         if (endMatch) endYear = parseInt(endMatch[0]);
                     }
 
+                    const lat = parseFloat(b.lat.value);
+                    const lon = parseFloat(b.lon.value);
+                    if (isNaN(lat) || isNaN(lon)) continue;
+
                     stmt.run(
                         id, name, wpTitle, 'person',
                         startYear, endYear,
-                        parseFloat(b.lat.value),
-                        parseFloat(b.lon.value),
+                        lat, lon,
                         parseInt(b.sitelinks ? b.sitelinks.value : 0),
                         b.img ? b.img.value + '?width=400' : null,
                         cat,
@@ -118,13 +121,40 @@ function insertRows(rows) {
     });
 }
 
-async function sparql(query) {
+async function sparql(query, timeoutMs = 45000) {
     const url = SPARQL_URL + '?format=json&query=' + encodeURIComponent(query);
-    const res = await axios.get(url, { headers: HEADERS, timeout: 60000 });
+    const res = await axios.get(url, { headers: HEADERS, timeout: timeoutMs });
     return res.data.results.bindings;
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Build query using a 5-year window and OPTIONAL image to reduce join cost.
+// Use direct wdt:P625 coords on the person (fast) and fall back to birthplace coords via OPTIONAL.
+function buildQuery(year) {
+    const y0 = year;
+    const y1 = year + 4;
+    return `
+    SELECT ?item ?itemLabel ?lat ?lon ?start ?end ?sitelinks ?wpTitle ?img ?occ WHERE {
+      ?item wdt:P31 wd:Q5 ;
+            wdt:P569 ?start ;
+            wikibase:sitelinks ?sitelinks .
+      FILTER(YEAR(?start) >= ${y0} && YEAR(?start) <= ${y1})
+      FILTER(?sitelinks > 25)
+      ?wpArticle schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?wpTitle .
+      {
+        ?item wdt:P625 ?coords .
+      } UNION {
+        ?item wdt:P19 ?bp . ?bp wdt:P625 ?coords .
+      }
+      OPTIONAL { ?item wdt:P18 ?img . }
+      OPTIONAL { ?item wdt:P570 ?end . }
+      OPTIONAL { ?item wdt:P106 ?occ . }
+      BIND(geof:latitude(?coords) AS ?lat)
+      BIND(geof:longitude(?coords) AS ?lon)
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    } LIMIT 200`;
+}
 
 async function harvest() {
     console.log('--- Starting Random History Harvest ---');
@@ -135,43 +165,41 @@ async function harvest() {
         importance_score INTEGER, thumbnailUrl TEXT, category TEXT, summary TEXT
     )`, r));
 
+    // Pick 8 random start years (5-year windows), spanning -500 to 1980
     const years = [];
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 8; i++) {
         years.push(Math.floor(Math.random() * (1980 - (-500) + 1)) + (-500));
     }
 
     let totalNew = 0;
 
     for (const year of years) {
-        process.stdout.write(`  Year ${year} ... `);
+        process.stdout.write(`  Years ${year}..${year + 4} ... `);
 
-        const q = `
-        SELECT ?item ?itemLabel ?lat ?lon ?start ?end ?sitelinks ?wpTitle ?img ?occ WHERE {
-          ?item wdt:P31 wd:Q5 .
-          ?item wdt:P569 ?start .
-          FILTER(YEAR(?start) = ${year})
-          ?item wdt:P19/wdt:P625 ?coords .
-          ?item wdt:P18 ?img .
-          ?wpArticle schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?wpTitle .
-          ?item wikibase:sitelinks ?sitelinks .
-          FILTER(?sitelinks > 30)
-          BIND(geof:latitude(?coords) AS ?lat)
-          BIND(geof:longitude(?coords) AS ?lon)
-          OPTIONAL { ?item wdt:P570 ?end . }
-          OPTIONAL { ?item wdt:P106 ?occ . }
-          SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
-        } LIMIT 500`;
+        const q = buildQuery(year);
 
-        try {
-            const rows = await sparql(q);
-            const saved = await insertRows(rows);
-            console.log(`${saved} added`);
-            totalNew += saved;
-        } catch (e) {
-            console.log('skipped (timeout/no data)');
+        let rows = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+                rows = await sparql(q, 50000);
+                break;
+            } catch (e) {
+                if (attempt === 0) {
+                    process.stdout.write('(retry) ');
+                    await sleep(20000);
+                }
+            }
         }
 
-        await sleep(1500);
+        if (!rows) {
+            console.log('skipped');
+        } else {
+            const saved = await insertRows(rows);
+            console.log(`${saved} added (${rows.length} raw rows)`);
+            totalNew += saved;
+        }
+
+        await sleep(4000);
     }
 
     const total = await new Promise(r => db.get("SELECT COUNT(*) as n FROM historical_entities", (e, row) => r(row.n)));

@@ -17,8 +17,12 @@ echo "=== Step 3/3: ancient figures ==="
 node harvest_bronze.js
 
 echo ""
+echo "Waiting 60s for Wikidata rate limit to reset before continuous harvest..."
+sleep 60
+
+echo ""
 echo "=== Continuous random harvest (Ctrl+C to stop) ==="
-echo "Each run picks 10 random years and adds new people."
+echo "Each run covers 8 random 5-year windows and adds new people."
 echo ""
 
 run=1
@@ -31,5 +35,5 @@ while true; do
     echo "Added: ${added} | Total: ${after}"
     echo ""
     run=$((run + 1))
-    sleep 3
+    sleep 15
 done
