@@ -24,6 +24,10 @@ import (
 
 var db *sql.DB
 
+// Set TRUST_PROXY when the server runs behind a reverse proxy that sets
+// X-Forwarded-For, which is the normal deployment.
+var trustProxy = os.Getenv("TRUST_PROXY") != ""
+
 var httpClient = &http.Client{Timeout: 5 * time.Second}
 
 type visitor struct {
@@ -204,13 +208,44 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// clientIP is who to rate limit. Behind a reverse proxy every request arrives
+// from the proxy, so keying on RemoteAddr puts the whole site in one bucket and
+// the first few visitors exhaust it for everyone.
+//
+// X-Forwarded-For is only read when TRUST_PROXY is set, because a client can
+// send that header itself when the server is exposed directly, and trusting it
+// there would let anyone bypass the limit by making one up per request.
+func clientIP(r *http.Request) string {
+	if trustProxy {
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			// Left-most entry is the original client; the rest are proxies.
+			if comma := strings.IndexByte(fwd, ','); comma >= 0 {
+				fwd = fwd[:comma]
+			}
+			if ip := strings.TrimSpace(fwd); ip != "" {
+				return ip
+			}
+		}
+		if real := strings.TrimSpace(r.Header.Get("X-Real-IP")); real != "" {
+			return real
+		}
+	}
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return ip
+}
+
 func rateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			ip = r.RemoteAddr
+		// Static assets are cheap and a single page load pulls several. Only
+		// the API costs anything worth limiting.
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
 		}
-		if !getVisitor(ip).Allow() {
+		if !getVisitor(clientIP(r)).Allow() {
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
 			return
 		}
