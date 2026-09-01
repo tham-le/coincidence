@@ -3,3 +3,8 @@ node_modules/
 frontend/build/
 frontend/frontend_log.txt
 package-lock.json
+server/coincidence
+server/coincidence-server
+
+# database backups
+backend/*.db.bak

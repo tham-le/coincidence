@@ -17,12 +17,24 @@ echo "=== Step 3/3: ancient figures ==="
 node harvest_bronze.js
 
 echo ""
+echo "=== Step 4/5: wars, battles, and revolutions ==="
+node harvest_events.js
+
+echo ""
+echo "=== Step 5/5: Vietnamese figures, women, and revolutionaries ==="
+node harvest_targeted.js
+
+echo ""
 echo "Waiting 60s for Wikidata rate limit to reset before continuous harvest..."
 sleep 60
 
 echo ""
 echo "=== Continuous random harvest (Ctrl+C to stop) ==="
 echo "Each run covers 8 random 5-year windows and adds new people."
+echo ""
+
+echo "When you have enough rows, stop with Ctrl+C and run ./pipeline.sh"
+echo "to clean, enrich, curate and rank what was collected."
 echo ""
 
 run=1

@@ -17,10 +17,9 @@ cd ..
 
 # Check for a database
 if [ ! -f "backend/coincidence.db" ]; then
-    echo "No database found. Run the harvesters first:"
-    echo "  node backend/ingest.js"
-    echo "  node backend/global_harvester.js"
-    echo "  node backend/harvest_bronze.js"
+    echo "No database found. Build one first:"
+    echo "  ./harvest.sh    # collect rows from Wikidata"
+    echo "  ./pipeline.sh   # clean, enrich, curate, rank"
 fi
 
 echo "Starting server on http://localhost:3000"
