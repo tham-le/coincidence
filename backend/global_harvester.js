@@ -98,7 +98,9 @@ function insertRows(rows) {
                     const name = b.itemLabel.value;
                     const wpTitle = b.wpTitle ? b.wpTitle.value : name;
 
-                    let endYear = startYear + 60;
+                    // No death date on Wikidata means unknown, not dead this year.
+                    // Store NULL; migrate.js and the interface handle it.
+                    let endYear = null;
                     if (b.end) {
                         const endRaw = b.end.value;
                         const isEndBCE = endRaw.startsWith('-');

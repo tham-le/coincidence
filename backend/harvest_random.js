@@ -94,7 +94,9 @@ function insertRows(rows) {
                     const wpTitle = b.wpTitle ? b.wpTitle.value : name;
                     const startYear = parseInt(startMatch[0]);
 
-                    let endYear = 2024;
+                    // No death date on Wikidata means unknown, not dead this year.
+                    // Store NULL; migrate.js and the interface handle it.
+                    let endYear = null;
                     if (b.end) {
                         const endMatch = b.end.value.match(/-?\d+/);
                         if (endMatch) endYear = parseInt(endMatch[0]);

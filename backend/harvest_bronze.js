@@ -27,7 +27,9 @@ function insertRows(rows, type, category) {
                     const wpTitle = b.wpTitle ? b.wpTitle.value : name;
                     const startYear = parseInt(startMatch[0]);
                     
-                    let endYear = startYear + 40; // Default lifespan for ancient figures
+                    // No death date on Wikidata means unknown, not dead this year.
+                    // Store NULL; migrate.js and the interface handle it.
+                    let endYear = null;
                     if (b.end) {
                         const endMatch = b.end.value.match(/-?\d+/);
                         if (endMatch) endYear = parseInt(endMatch[0]);

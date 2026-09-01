@@ -14,7 +14,7 @@ async function sparql(query) {
 function insertRows(rows, type, category) {
     return new Promise((resolve) => {
         db.serialize(() => {
-            const stmt = db.prepare("INSERT OR REPLACE INTO historical_entities VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
+            const stmt = db.prepare("INSERT OR IGNORE INTO historical_entities VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
             let count = 0;
             rows.forEach(b => {
                 try {
@@ -26,7 +26,9 @@ function insertRows(rows, type, category) {
                     const wpTitle = b.wpTitle ? b.wpTitle.value : name;
                     const startYear = parseInt(startMatch[0]);
                     
-                    let endYear = 2024;
+                    // No death date on Wikidata means unknown, not dead this year.
+                    // Store NULL; migrate.js and the interface handle it.
+                    let endYear = null;
                     if (b.end) {
                         const endMatch = b.end.value.match(/-?\d+/);
                         if (endMatch) endYear = parseInt(endMatch[0]);
