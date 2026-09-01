@@ -1,29 +1,164 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
 
-const FACE_THRESHOLD = 150;
 
 const CATEGORY_COLORS = {
-  Leaders: '#e05252',
-  Scientists: '#4a90e2',
-  Artists: '#b07fd8',
-  Philosophers: '#27ae80',
-  Military: '#e67e22',
-  Explorers: '#16a085',
-  Events: '#d4a017',
+  Leaders:      '#e05252',
+  Scientists:   '#4a90e2',
+  Artists:      '#b07fd8',
+  Thinkers:     '#27ae80',
+  Military:     '#e67e22',
+  Explorers:    '#16a085',
+  Wars:         '#c0392b',
+  Battles:      '#e74c3c',
+  Revolutions:  '#e67e22',
 };
 const DEFAULT_DOT_COLOR = '#d4a017';
 
-const MIN_COINCIDENCE_DIST = 15; // roughly cross-continental minimum
+const REGIONS = {
+  'Southeast Asia': { latMin: -10, latMax: 28,  lonMin: 92,   lonMax: 141 },
+  'East Asia':      { latMin: 20,  latMax: 55,  lonMin: 100,  lonMax: 145 },
+  'South Asia':     { latMin: 5,   latMax: 37,  lonMin: 60,   lonMax: 100 },
+  'Middle East':    { latMin: 12,  latMax: 42,  lonMin: 25,   lonMax: 65  },
+  'Europe':         { latMin: 35,  latMax: 72,  lonMin: -25,  lonMax: 45  },
+  'Africa':         { latMin: -35, latMax: 37,  lonMin: -20,  lonMax: 52  },
+  'Americas':       { latMin: -55, latMax: 72,  lonMin: -170, lonMax: -30 },
+};
 
-const scoreCoincidence = (a, b) => {
+const isInRegion = (p, region) =>
+  p.latitude >= region.latMin && p.latitude <= region.latMax &&
+  p.longitude >= region.lonMin && p.longitude <= region.lonMax;
+
+const MIN_COINCIDENCE_DIST = 15;
+
+const formatYear = y => y < 0 ? `${Math.abs(y)} BCE` : `${y} CE`;
+
+// A null death year now means "alive" or "unknown", not "2024". Every label
+// that used to print a made-up year goes through this.
+const lifespanText = p => {
+  const from = formatYear(p.start_year);
+  if (p.end_year === null || p.end_year === undefined) {
+    return p.alive ? `${from} to today` : `${from}, death unknown`;
+  }
+  return `${from} to ${formatYear(p.end_year)}`;
+};
+
+const regionOfPoint = (p) => {
+  if (!p.latitude || !p.longitude) return null;
+  for (const [name, r] of Object.entries(REGIONS)) {
+    if (p.latitude >= r.latMin && p.latitude <= r.latMax &&
+        p.longitude >= r.lonMin && p.longitude <= r.lonMax) return name;
+  }
+  return null;
+};
+
+// Years both people were in their active phase (roughly age 20-60).
+const activeOverlap = (a, b) => {
+  const aEnd = a.end_year ?? a.start_year + 72;
+  const bEnd = b.end_year ?? b.start_year + 72;
+  const start = Math.max(a.start_year + 18, b.start_year + 18);
+  const end   = Math.min(aEnd - 12,         bEnd - 12);
+  return Math.max(0, end - start);
+};
+
+const geoDist = (a, b) => {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
-  const dist = Math.sqrt(dx * dx + dy * dy);
+  return Math.sqrt(dx * dx + dy * dy);
+};
+
+const makeConnectionLabel = (a, b) => {
+  if (a.type === 'event' || b.type === 'event') {
+    const ev = a.type === 'event' ? a : b;
+    return `During the ${ev.name}`;
+  }
+  const ca = a.category || '';
+  const cb = b.category || '';
+  const has = (...cats) => cats.some(c => ca === c || cb === c);
+  const both = (c) => ca === c && cb === c;
+  if (both('Leaders'))      return 'Rulers of different worlds';
+  if (both('Scientists'))   return 'Parallel discoveries';
+  if (both('Artists'))      return 'Two creators, worlds apart';
+  if (both('Philosophers')) return 'Two great minds';
+  if (has('Leaders') && has('Scientists'))      return 'Power and discovery';
+  if (has('Leaders') && has('Artists'))         return 'Empire and art';
+  if (has('Leaders') && has('Philosophers'))    return 'Sword and thought';
+  if (has('Leaders') && has('Military'))        return 'Two commanders';
+  if (has('Leaders') && has('Explorers'))       return 'Rulers and explorers';
+  if (has('Scientists') && has('Philosophers')) return 'Knowledge across continents';
+  if (has('Military') && has('Philosophers'))   return 'War and wisdom';
+  if (has('Wars') || has('Battles') || has('Revolutions')) return 'War and the world';
+  return 'Worlds apart, time shared';
+};
+
+const makeConnectionSentence = (a, b, overlapYears, overlapStart, overlapEnd) => {
+  if (overlapYears <= 0) return null;
+  if (a.type === 'event' || b.type === 'event') {
+    const ev     = a.type === 'event' ? a : b;
+    const person = a.type === 'event' ? b : a;
+    const region = regionOfPoint(person);
+    return `${person.name}${region ? `, in ${region},` : ''} was alive throughout ${ev.name}.`;
+  }
+  const regionA = regionOfPoint(a);
+  const regionB = regionOfPoint(b);
+  const placeA = regionA ? ` in ${regionA}` : '';
+  const placeB = regionB ? ` in ${regionB}` : '';
+  return (
+    `For ${overlapYears} years (${formatYear(overlapStart)} to ${formatYear(overlapEnd)}), ` +
+    `${a.name}${placeA} and ${b.name}${placeB} walked the same Earth. ` +
+    `Did their paths ever cross?`
+  );
+};
+
+// Score a pair for zone/global mode: distance x cross-domain x active overlap.
+const scorePair = (a, b) => {
+  const dist = geoDist(a, b);
   if (dist < MIN_COINCIDENCE_DIST) return 0;
-  const importance = Math.sqrt((a.importance_score || 1) * (b.importance_score || 1));
-  const categoryBonus = a.category !== b.category ? 1.4 : 1.0;
-  return importance * dist * categoryBonus;
+  const overlap = activeOverlap(a, b);
+  if (overlap < 2) return 0;
+  const crossDomain = a.category !== b.category ? 1.5 : 1.0;
+  return dist * crossDomain * Math.log(overlap + 2);
+};
+
+// Score an event+person pair: simple temporal overlap, not active-phase.
+const scoreEventPair = (event, person) => {
+  const dist = geoDist(event, person);
+  if (dist < MIN_COINCIDENCE_DIST) return 0;
+  const eventEnd  = event.end_year  || event.start_year  + 10;
+  const personEnd = person.end_year || 2024;
+  const overlap = Math.max(0, Math.min(eventEnd, personEnd) - Math.max(event.start_year, person.start_year));
+  if (overlap < 1) return 0;
+  const personFame = Math.pow(person.importance_score || 1, 0.6);
+  const eventFame  = Math.pow(event.importance_score  || 1, 0.4);
+  return dist * personFame * eventFame * Math.log(overlap + 2);
+};
+
+// Weighted random sample: picks n items from pool proportional to score.
+const weightedSample = (pool, n) => {
+  if (pool.length <= n) return [...pool];
+  const out = [];
+  const rem = [...pool];
+  while (out.length < n && rem.length > 0) {
+    const total = rem.reduce((s, p) => s + p.score, 0);
+    let r = Math.random() * total;
+    let picked = rem.length - 1;
+    for (let i = 0; i < rem.length; i++) { r -= rem[i].score; if (r <= 0) { picked = i; break; } }
+    out.push(rem[picked]);
+    rem.splice(picked, 1);
+  }
+  return out;
+};
+
+// Score a regional pair: weight toward famous world figures x active overlap.
+// This is what surfaces Quang Trung + Napoleon and Hai Ba Trung + Roman figures.
+const scorePinnedPair = (regional, world) => {
+  const dist = geoDist(regional, world);
+  if (dist < MIN_COINCIDENCE_DIST) return 0;
+  const overlap = activeOverlap(regional, world);
+  if (overlap < 2) return 0;
+  const worldFame = Math.pow(world.importance_score || 1, 0.7);
+  const crossDomain = regional.category !== world.category ? 1.4 : 1.0;
+  return worldFame * overlap * crossDomain * (dist / 30);
 };
 
 const pointsInBox = (points, box) => {
@@ -36,44 +171,144 @@ const pointsInBox = (points, box) => {
 };
 
 const findZoneCoincidences = (points, box, n = 8) => {
-  const inside = pointsInBox(points, box).filter(p => (p.importance_score || 0) >= 20);
-  const outside = points
-    .filter(p => !pointsInBox([p], box).length && (p.importance_score || 0) >= 60 && p.thumbnailUrl);
-  if (inside.length === 0 || outside.length === 0) return [];
+  const inBox   = pointsInBox(points, box);
+  const inside  = inBox.filter(p => p.type === 'person' && (p.importance_score || 0) >= 10);
+  const insideEvents = inBox.filter(p => p.type === 'event' && (p.importance_score || 0) >= 15);
+  const outside = points.filter(p => !pointsInBox([p], box).length && p.type === 'person' && (p.importance_score || 0) >= 50);
+  if ((!inside.length && !insideEvents.length) || !outside.length) return [];
   const pairs = [];
   for (const a of inside) {
     for (const b of outside) {
-      pairs.push({ a, b, score: scoreCoincidence(a, b) });
+      const score = scorePinnedPair(a, b);
+      if (score > 0) pairs.push({ a, b, score });
     }
   }
-  return pairs.sort((x, y) => y.score - x.score).slice(0, n);
+  for (const ev of insideEvents) {
+    for (const person of outside) {
+      const score = scoreEventPair(ev, person);
+      if (score > 0) pairs.push({ a: ev, b: person, score });
+    }
+  }
+  if (!pairs.length) return [];
+  return weightedSample(pairs, n);
 };
 
 const findCoincidences = (points, n = 8) => {
-  const candidates = points
-    .filter(p => (p.importance_score || 0) >= 80 && p.thumbnailUrl)
-    .slice(0, 40);
-  const pairs = [];
-  for (let i = 0; i < candidates.length; i++) {
-    for (let j = i + 1; j < candidates.length; j++) {
-      pairs.push({ a: candidates[i], b: candidates[j], score: scoreCoincidence(candidates[i], candidates[j]) });
+  const people = points.filter(p => p.type === 'person' && (p.importance_score || 0) >= 50);
+  const events = points.filter(p => p.type === 'event'  && (p.importance_score || 0) >= 20);
+
+  const personPairs = [];
+  for (let i = 0; i < people.length; i++) {
+    for (let j = i + 1; j < people.length; j++) {
+      const score = scorePair(people[i], people[j]);
+      if (score > 0) personPairs.push({ a: people[i], b: people[j], score });
     }
   }
-  return pairs.sort((x, y) => y.score - x.score).slice(0, n);
+
+  const eventPairs = [];
+  for (const ev of events) {
+    for (const person of people) {
+      const score = scoreEventPair(ev, person);
+      if (score > 0) eventPairs.push({ a: ev, b: person, score });
+    }
+  }
+
+  const nEvent  = Math.min(3, eventPairs.length);
+  const nPerson = n - nEvent;
+  return weightedSample(eventPairs, nEvent).concat(weightedSample(personPairs, nPerson));
 };
 
-const formatYear = y => y < 0 ? `${Math.abs(y)} BCE` : `${y} CE`;
+const findCoincidencesForPerson = (person, points, n = 8) => {
+  const others = points.filter(p => p.type === 'person' && p.id !== person.id);
+  const events = points.filter(p => p.type === 'event'  && (p.importance_score || 0) >= 20);
 
-const CoincidenceCard = ({ pair, onDismiss }) => {
+  const personPairs = [];
+  for (const other of others) {
+    const score = scorePair(person, other);
+    if (score > 0) personPairs.push({ a: person, b: other, score });
+  }
+
+  const eventPairs = [];
+  for (const ev of events) {
+    const score = scoreEventPair(ev, person);
+    if (score > 0) eventPairs.push({ a: ev, b: person, score });
+  }
+
+  const nEvent  = Math.min(2, eventPairs.length);
+  const nPerson = n - nEvent;
+  return weightedSample(eventPairs, nEvent).concat(weightedSample(personPairs, nPerson));
+};
+
+const GEO_NEAR_RADIUS = 10;
+const GEO_FAR_RADIUS  = 20;
+
+const findGeoAnchoredCoincidences = (points, cx, cy, n = 8) => {
+  const dist2 = p => { const dx = p.x - cx, dy = p.y - cy; return dx*dx + dy*dy; };
+  const people = points.filter(p => p.type === 'person');
+  const events = points.filter(p => p.type === 'event' && (p.importance_score || 0) >= 15);
+
+  const nearby       = people.filter(p => dist2(p) <= GEO_NEAR_RADIUS**2 && (p.importance_score || 0) >= 8);
+  const nearbyEvents = events.filter(p => dist2(p) <= GEO_NEAR_RADIUS**2);
+  const farAway      = people.filter(p => dist2(p) >  GEO_FAR_RADIUS**2  && (p.importance_score || 0) >= 50);
+
+  if ((!nearby.length && !nearbyEvents.length) || !farAway.length) return findCoincidences(points, n);
+
+  const pairs = [];
+  for (const a of nearby) {
+    for (const b of farAway) {
+      const score = scorePinnedPair(a, b);
+      if (score > 0) pairs.push({ a, b, score });
+    }
+  }
+  for (const ev of nearbyEvents) {
+    for (const person of farAway) {
+      const score = scoreEventPair(ev, person);
+      if (score > 0) pairs.push({ a: ev, b: person, score });
+    }
+  }
+
+  if (!pairs.length) return findCoincidences(points, n);
+  return weightedSample(pairs, n);
+};
+
+const findPinnedRegionCoincidences = (points, region, n = 8) => {
+  const people = points.filter(p => p.type === 'person');
+  const events = points.filter(p => p.type === 'event' && (p.importance_score || 0) >= 15);
+  // Low threshold so figures like Hai Ba Trung appear even with modest sitelinks.
+  const inside       = people.filter(p =>  isInRegion(p, region) && (p.importance_score || 0) >= 8);
+  const insideEvents = events.filter(p =>  isInRegion(p, region));
+  // High threshold for world figures: the pairing only surprises if the other person is very famous.
+  const outside      = people.filter(p => !isInRegion(p, region) && (p.importance_score || 0) >= 80);
+  if ((!inside.length && !insideEvents.length) || !outside.length) return findCoincidences(points, n);
+  const pairs = [];
+  for (const a of inside) {
+    for (const b of outside) {
+      const score = scorePinnedPair(a, b);
+      if (score > 0) pairs.push({ a, b, score });
+    }
+  }
+  for (const ev of insideEvents) {
+    for (const person of outside) {
+      const score = scoreEventPair(ev, person);
+      if (score > 0) pairs.push({ a: ev, b: person, score });
+    }
+  }
+  const result = weightedSample(pairs, n);
+  return result.length > 0 ? result : findCoincidences(points, n);
+};
+
+const CoincidenceCard = ({ pair, onDismiss, onNext, index, total }) => {
   const [extractA, setExtractA] = useState('');
   const [extractB, setExtractB] = useState('');
 
   useEffect(() => {
+    setExtractA('');
+    setExtractB('');
     const fetchExtract = (entity, setter) => {
       if (!entity.wpTitle) return;
       fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(entity.wpTitle)}`)
         .then(r => r.ok ? r.json() : null)
-        .then(d => { if (d?.extract) setter(d.extract.split('.')[0] + '.'); })
+        .then(d => { if (d?.extract) setter(d.extract.split('.').slice(0, 3).join('.') + '.'); })
         .catch(() => {});
     };
     fetchExtract(pair.a, setExtractA);
@@ -81,40 +316,77 @@ const CoincidenceCard = ({ pair, onDismiss }) => {
   }, [pair.a.id, pair.b.id]);
 
   const overlapStart = Math.max(pair.a.start_year, pair.b.start_year);
-  const overlapEnd = Math.min(pair.a.end_year ?? 2024, pair.b.end_year ?? 2024);
+  const overlapEnd   = Math.min(pair.a.end_year ?? 2024, pair.b.end_year ?? 2024);
   const overlapYears = Math.max(0, overlapEnd - overlapStart);
 
+  const renderEntry = (p, extract, label) => {
+    const catColor = CATEGORY_COLORS[p.category] || DEFAULT_DOT_COLOR;
+    const region = regionOfPoint(p);
+    return (
+      <div className="cc-entry">
+        <div className="cc-avatar-wrap">
+          {p.thumbnailUrl
+            ? <img src={p.thumbnailUrl} alt={p.name} className="cc-avatar" />
+            : <div className="cc-avatar-blank" style={{ borderColor: catColor }} />}
+          {p.type === 'event' && <div className="cc-event-badge" style={{ background: catColor }} />}
+        </div>
+        <div className="cc-entry-body">
+          <div className="cc-entry-top">
+            <span className="cc-name">{p.name}</span>
+            {p.category && (
+              <span className="cat-badge" style={{ '--cat-color': catColor }}>{p.category}</span>
+            )}
+          </div>
+          <div className="cc-entry-sub">
+            {region && <span className="cc-region">{region}</span>}
+            <span className="cc-lifespan">
+              {formatYear(p.start_year)}{p.end_year ? ` to ${formatYear(p.end_year)}` : ''}
+            </span>
+          </div>
+          {extract
+            ? <p className="cc-extract">{extract}</p>
+            : <p className="cc-extract cc-extract-loading">Loading...</p>}
+        </div>
+      </div>
+    );
+  };
+
+  const label = makeConnectionLabel(pair.a, pair.b);
+  const sentence = makeConnectionSentence(pair.a, pair.b, overlapYears, overlapStart, overlapEnd);
+  const regionA = regionOfPoint(pair.a);
+  const regionB = regionOfPoint(pair.b);
+  const bridgeText = (regionA && regionB && regionA !== regionB)
+    ? `${regionA} ↔ ${regionB}`
+    : 'meanwhile';
+
   return (
-    <div className="coincidence-card animate-in">
-      <button className="coincidence-dismiss" onClick={onDismiss}>x</button>
-      <div className="coincidence-header">
-        <span className="coincidence-label">Coincidence</span>
-        {overlapYears > 0 && (
-          <span className="coincidence-overlap">{overlapYears} yrs · {formatYear(overlapStart)} to {formatYear(overlapEnd)}</span>
-        )}
-      </div>
-      <div className="coincidence-faces">
-        <div className="coincidence-person">
-          {pair.a.thumbnailUrl && <img src={pair.a.thumbnailUrl} alt={pair.a.name} />}
-          <strong>{pair.a.name}</strong>
-          <span className="coincidence-years">{formatYear(pair.a.start_year)} to {formatYear(pair.a.end_year ?? 2024)}</span>
-          {pair.a.category && <span className="cat-badge" style={{ '--cat-color': CATEGORY_COLORS[pair.a.category] || DEFAULT_DOT_COLOR }}>{pair.a.category}</span>}
+    <div className="coincidence-card animate-slide-in-left">
+      <div className="cc-topbar">
+        <div className="cc-topbar-left">
+          <span className="coincidence-label">{label}</span>
         </div>
-        <div className="coincidence-symbol">&#x2229;</div>
-        <div className="coincidence-person">
-          {pair.b.thumbnailUrl && <img src={pair.b.thumbnailUrl} alt={pair.b.name} />}
-          <strong>{pair.b.name}</strong>
-          <span className="coincidence-years">{formatYear(pair.b.start_year)} to {formatYear(pair.b.end_year ?? 2024)}</span>
-          {pair.b.category && <span className="cat-badge" style={{ '--cat-color': CATEGORY_COLORS[pair.b.category] || DEFAULT_DOT_COLOR }}>{pair.b.category}</span>}
+        <div className="cc-topbar-right">
+          {total > 1 && (
+            <button className="cc-next-btn" onClick={onNext}>
+              {index + 1}&thinsp;/&thinsp;{total} &rarr;
+            </button>
+          )}
+          <button className="coincidence-dismiss" onClick={onDismiss}>&#x2715;</button>
         </div>
       </div>
-      {(extractA || extractB) && (
-        <p className="coincidence-text">
-          {extractA}
-          {extractA && extractB ? ' Meanwhile, ' : ''}
-          {extractB}
-        </p>
+
+      {overlapYears > 0 && (
+        <div className="cc-overlap-bar">
+          <span className="cc-overlap-years">{overlapYears} shared years</span>
+          <span className="cc-overlap-range">{formatYear(overlapStart)} to {formatYear(overlapEnd)}</span>
+        </div>
       )}
+
+      {sentence && <p className="cc-sentence">{sentence}</p>}
+
+      {renderEntry(pair.a, extractA)}
+      <div className="cc-meanwhile">{bridgeText}</div>
+      {renderEntry(pair.b, extractB)}
     </div>
   );
 };
@@ -147,6 +419,119 @@ const YearSnapshotPanel = ({ points, year, onSelect, onClose }) => {
             <div className="snapshot-info">
               <strong>{p.name}</strong>
               <span>{formatYear(p.start_year)}{p.end_year ? ` to ${formatYear(p.end_year)}` : ''}</span>
+              {p.category && <span className="snapshot-cat">{p.category}</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const RegionPicker = ({ pinned, onPin }) => (
+  <div className="region-picker">
+    <span className="region-picker-label">Home region</span>
+    <div className="region-picker-buttons">
+      {Object.keys(REGIONS).map(name => (
+        <button
+          key={name}
+          className={`region-btn${pinned === name ? ' active' : ''}`}
+          onClick={() => onPin(pinned === name ? null : name)}
+        >
+          {name}
+        </button>
+      ))}
+    </div>
+  </div>
+);
+
+const EventPanel = ({ event, region, onPersonSelect, onClose }) => {
+  const [extract, setExtract] = useState('');
+  const [people, setPeople] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setExtract('');
+    setPeople([]);
+    setLoading(true);
+
+    if (event.wpTitle) {
+      fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(event.wpTitle)}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d?.extract) setExtract(d.extract.split('.').slice(0, 2).join('.') + '.'); })
+        .catch(() => {});
+    }
+
+    const params = new URLSearchParams({
+      start: event.start_year,
+      end: event.end_year || event.start_year + 10,
+    });
+    if (region) {
+      const r = REGIONS[region];
+      params.set('latMin', r.latMin);
+      params.set('latMax', r.latMax);
+      params.set('lonMin', r.lonMin);
+      params.set('lonMax', r.lonMax);
+    }
+    fetch(`/api/event-contemporaries?${params}`)
+      .then(r => r.json())
+      .then(data => { setPeople(data); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [event.id, region]);
+
+  const catColor = CATEGORY_COLORS[event.category] || DEFAULT_DOT_COLOR;
+  const duration = event.end_year && event.end_year !== event.start_year
+    ? event.end_year - event.start_year : null;
+
+  const ageContext = (p) => {
+    const ageAtStart = event.start_year - p.start_year;
+    if (ageAtStart < 0) return `born ${Math.abs(ageAtStart)} years after it began`;
+    if (ageAtStart === 0) return 'born the year it began';
+    if (p.end_year && p.end_year < event.start_year) return 'died before it began';
+    return `${ageAtStart} years old when it began`;
+  };
+
+  return (
+    <div className="snapshot-panel event-panel animate-slide-in-left">
+      <div className="snapshot-header">
+        <span className="snapshot-title">{event.name}</span>
+        <button className="snapshot-close" onClick={onClose}>&#x2715;</button>
+      </div>
+      <div className="event-panel-meta">
+        <span className="cat-badge" style={{ '--cat-color': catColor }}>{event.category}</span>
+        <span className="event-panel-years">
+          {formatYear(event.start_year)}
+          {duration ? ` to ${formatYear(event.end_year)} (${duration} yrs)` : ''}
+        </span>
+      </div>
+      {extract && <p className="event-panel-extract">{extract}</p>}
+      <div className="snapshot-count">
+        {!loading && people.length > 0 && (
+          <span>
+            While this unfolded, {people.length} known figures were shaping the world.
+            Click any name to explore their story.
+          </span>
+        )}
+        {!loading && people.length === 0 && (
+          <span>{region ? `No records found for ${region}.` : 'No records found.'}</span>
+        )}
+        {loading && <span>Searching history...</span>}
+      </div>
+      <div className="snapshot-grid">
+        {people.map(p => (
+          <div key={p.id} className="snapshot-person" onClick={() => onPersonSelect(p)}
+            style={{ '--dot-color': CATEGORY_COLORS[p.category] || DEFAULT_DOT_COLOR }}>
+            <div className="snapshot-avatar">
+              {p.thumbnailUrl
+                ? <img src={p.thumbnailUrl} alt={p.name} />
+                : <div className="snapshot-avatar-placeholder" />}
+              {p.category && (
+                <span className="snapshot-cat-dot" style={{ background: CATEGORY_COLORS[p.category] || DEFAULT_DOT_COLOR }} />
+              )}
+            </div>
+            <div className="snapshot-info">
+              <strong>{p.name}</strong>
+              <span className="snapshot-age-context">{ageContext(p)}</span>
               {p.category && <span className="snapshot-cat">{p.category}</span>}
             </div>
           </div>
@@ -192,16 +577,15 @@ const EntityCard = ({ entity }) => {
   );
 };
 
-const Search = ({ onSelect }) => {
+const SearchOverlay = ({ onSelect, onClose }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
-  const [showResults, setShowResults] = useState(false);
+  const inputRef = React.useRef(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
 
   useEffect(() => {
-    if (query.length < 2) {
-      setResults([]);
-      return;
-    }
+    if (query.length < 2) { setResults([]); return; }
     const timer = setTimeout(() => {
       fetch(`/api/search-name?q=${encodeURIComponent(query)}`)
         .then(res => res.json())
@@ -210,91 +594,177 @@ const Search = ({ onSelect }) => {
     return () => clearTimeout(timer);
   }, [query]);
 
+  const handleKey = e => { if (e.key === 'Escape') onClose(); };
+
   return (
-    <div className="search-container">
-      <input
-        type="text"
-        placeholder="Search for a name (e.g. Einstein, Plato)..."
-        value={query}
-        onChange={e => { setQuery(e.target.value); setShowResults(true); }}
-        onFocus={() => setShowResults(true)}
-        className="search-input"
-      />
-      {showResults && results.length > 0 && (
-        <div className="search-results">
-          {results.map(r => (
-            <div
-              key={r.id}
-              className="search-item"
-              onClick={() => {
-                onSelect(r);
-                setQuery('');
-                setShowResults(false);
-              }}
-            >
-              <div className="search-item-left">
-                <span className="search-item-name">{r.name}</span>
-                <span className={`type-badge mini ${r.type}`}>{r.type}</span>
-              </div>
-              <span className="search-item-year">({r.start_year})</span>
-            </div>
-          ))}
+    <div className="search-overlay" onClick={onClose}>
+      <div className="search-overlay-box" onClick={e => e.stopPropagation()}>
+        <div className="search-overlay-input-row">
+          <span className="search-overlay-icon">&#128269;</span>
+          <input
+            ref={inputRef}
+            type="text"
+            placeholder="Search a person or event..."
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={handleKey}
+            className="search-overlay-input"
+          />
+          <button className="search-overlay-close" onClick={onClose}>&#x2715;</button>
         </div>
-      )}
+        {results.length > 0 && (
+          <div className="search-overlay-results">
+            {results.map(r => {
+              const catColor = CATEGORY_COLORS[r.category] || DEFAULT_DOT_COLOR;
+              return (
+                <div key={r.id} className="search-overlay-item" onClick={() => { onSelect(r); onClose(); }}>
+                  <div className="search-overlay-item-main">
+                    {r.thumbnailUrl
+                      ? <img src={r.thumbnailUrl} alt="" className="search-overlay-thumb" />
+                      : <div className="search-overlay-thumb-blank" style={{ borderColor: catColor }} />}
+                    <div className="search-overlay-item-text">
+                      <span className="search-overlay-name">{r.name}</span>
+                      <span className="search-overlay-meta">{lifespanText(r)}</span>
+                    </div>
+                  </div>
+                  {r.category && (
+                    <span className="cat-badge" style={{ '--cat-color': catColor }}>{r.category}</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {query.length >= 2 && results.length === 0 && (
+          <p className="search-overlay-empty">No results found</p>
+        )}
+      </div>
     </div>
   );
 };
 
-const HistorySparkline = ({ data, currentYear, onYearChange }) => {
+const TIMELINE_MARKERS = [
+  { year:    0, label: '0 CE'        },
+  { year:  476, label: 'Rome falls'  },
+  { year: 1066, label: 'Hastings'    },
+  { year: 1347, label: 'Plague'      },
+  { year: 1492, label: 'Columbus'    },
+  { year: 1687, label: 'Newton'      },
+  { year: 1789, label: 'Fr. Rev.'    },
+  { year: 1848, label: 'Revolutions' },
+  { year: 1914, label: 'WW1'         },
+  { year: 1945, label: 'WW2'         },
+  { year: 1969, label: 'Moon'        },
+];
+
+const ERAS = [
+  { name: 'Ancient World',    year: -400,  civilizations: ['Persia', 'Maurya', 'Zhou'] },
+  { name: 'Classical Age',    year: -50,   civilizations: ['Rome', 'Han', 'Parthia'] },
+  { name: 'Golden Ages',      year: 800,   civilizations: ['Abbasid', 'Tang', 'Maya'] },
+  { name: 'Medieval',         year: 1100,  civilizations: ['Song', 'Khmer', 'Mali'] },
+  { name: 'Mongol Age',       year: 1270,  civilizations: ['Mongol', 'Mali', 'Delhi'] },
+  { name: 'Early Modern',     year: 1500,  civilizations: ['Ottoman', 'Aztec', 'Ming'] },
+  { name: 'Revolution Era',   year: 1800,  civilizations: ['Napoleon', 'Quang Trung', 'Bolívar'] },
+];
+
+// Non-linear time scale: each segment maps a range of years to a % of slider space.
+// Pre-1700 is compressed; 1700-2024 (the dense modern era) gets 50% of the slider.
+// 1800 CE lands at ~65% so Revolution Era feels late, not central.
+const TIME_BREAKPOINTS = [
+  { year: -1374, pos: 0   },
+  { year:  -400, pos: 7   },  //  974 years →  7%
+  { year:   500, pos: 15  },  //  900 years →  8%
+  { year:  1000, pos: 22  },  //  500 years →  7%
+  { year:  1400, pos: 32  },  //  400 years → 10%
+  { year:  1700, pos: 50  },  //  300 years → 18%
+  { year:  1800, pos: 65  },  //  100 years → 15%
+  { year:  1900, pos: 82  },  //  100 years → 17%
+  { year:  2024, pos: 100 },  //  124 years → 18%
+];
+
+const yearToSlider = (year) => {
+  const bp = TIME_BREAKPOINTS;
+  if (year <= bp[0].year) return bp[0].pos;
+  if (year >= bp[bp.length - 1].year) return bp[bp.length - 1].pos;
+  for (let i = 1; i < bp.length; i++) {
+    if (year <= bp[i].year) {
+      const t = (year - bp[i-1].year) / (bp[i].year - bp[i-1].year);
+      return bp[i-1].pos + t * (bp[i].pos - bp[i-1].pos);
+    }
+  }
+  return bp[bp.length - 1].pos;
+};
+
+const sliderToYear = (v) => {
+  const bp = TIME_BREAKPOINTS;
+  if (v <= bp[0].pos) return bp[0].year;
+  if (v >= bp[bp.length - 1].pos) return bp[bp.length - 1].year;
+  for (let i = 1; i < bp.length; i++) {
+    if (v <= bp[i].pos) {
+      const t = (v - bp[i-1].pos) / (bp[i].pos - bp[i-1].pos);
+      return Math.round(bp[i-1].year + t * (bp[i].year - bp[i-1].year));
+    }
+  }
+  return bp[bp.length - 1].year;
+};
+
+const HistorySparkline = ({ data, currentYear }) => {
   if (!data || data.length === 0) return null;
   const maxCount = Math.max(...data.map(d => d.count));
-  const minYear = -1374;
-  const maxYear = 2024;
-  const range = maxYear - minYear;
 
-  // Use a non-linear scale (square root) to boost low-density areas
-  const points = data.map(d => {
-    // Filter out data points before -1374 for the sparkline drawing
-    if (d.decade < minYear) return null;
-    const x = ((d.decade - minYear) / range) * 100;
-    const y = 100 - (Math.sqrt(d.count) / Math.sqrt(maxCount)) * 100;
-    return `${x},${y}`;
-  }).filter(p => p !== null).join(' ');
+  const points = data
+    .map(d => {
+      const x = yearToSlider(d.decade);
+      const y = 100 - (Math.sqrt(d.count) / Math.sqrt(maxCount)) * 100;
+      return `${x},${y}`;
+    })
+    .join(' ');
 
-  const currentX = ((currentYear - minYear) / range) * 100;
-
-  const eras = [
-    { name: 'Ancient', year: -1300 },
-    { name: 'Classical', year: -400 },
-    { name: 'Middle', year: 800 },
-    { name: 'Renaiss.', year: 1550 },
-    { name: 'Modern', year: 1940 }
-  ];
+  const currentX = yearToSlider(currentYear);
 
   return (
     <div className="sparkline-container-wrapper">
       <div className="sparkline-container">
         <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="sparkline-svg">
+          {TIME_BREAKPOINTS.slice(1, -1).map(bp => (
+            <line key={bp.year} x1={bp.pos} y1="60" x2={bp.pos} y2="100"
+              stroke="rgba(255,255,255,0.1)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+          ))}
           <polyline points={points} className="sparkline-path" />
-          <line x1={currentX} y1="0" x2={currentX} y2="100" className="sparkline-indicator" />
+          <line x1={currentX} y1="0" x2={currentX} y2="100"
+            className="sparkline-indicator" vectorEffect="non-scaling-stroke" />
         </svg>
-      </div>
-      <div className="timeline-markers">
-        {eras.map(era => (
-          <span 
-            key={era.name} 
-            onClick={() => onYearChange(era.year)}
-            style={{ left: `${((era.year - minYear) / range) * 100}%`, position: 'absolute', transform: 'translateX(-50%)' }}
-          >
-            {era.name}
-          </span>
-        ))}
       </div>
     </div>
   );
 };
 
-const WorldMap = ({ points, onMapClick, selectedPoint, syncActive, onPointClick, coincidencePair, onCoincidenceClick, onSelectionChange }) => {
+const EraCards = ({ currentYear, onYearChange }) => {
+  const nearest = ERAS.reduce((best, era) =>
+    Math.abs(era.year - currentYear) < Math.abs(best.year - currentYear) ? era : best
+  );
+  return (
+    <div className="era-cards-row">
+      {ERAS.map(era => (
+        <button
+          key={era.name}
+          className={`era-card${era === nearest ? ' active' : ''}`}
+          onClick={() => onYearChange(era.year)}
+        >
+          <div className="era-card-name">{era.name}</div>
+          <div className="era-card-year">{formatYear(era.year)}</div>
+          <div className="era-card-civs">
+            {era.civilizations.slice(0, 2).map(c => (
+              <span key={c} className="era-civ-chip">{c}</span>
+            ))}
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+};
+
+const WorldMap = ({ points, onMapClick, selectedPoint, syncActive, onPointClick, coincidencePair, onCoincidenceClick, onSelectionChange, geoAnchor }) => {
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -460,6 +930,16 @@ const WorldMap = ({ points, onMapClick, selectedPoint, syncActive, onPointClick,
         )}
 
         <div className={`map-overlay${syncActive ? ' sync-active' : ''}`} onClick={handleClick}>
+          {geoAnchor && !syncActive && (
+            <div
+              className="geo-anchor-ring"
+              style={{
+                left: `${geoAnchor.x}%`,
+                top: `${geoAnchor.y}%`,
+                transform: `translate(-50%, -50%) scale(${1 / Math.sqrt(zoom)})`
+              }}
+            />
+          )}
           {selection && (
             <div className="selection-box" style={{
               left: `${Math.min(selection.x1, selection.x2)}%`,
@@ -473,6 +953,7 @@ const WorldMap = ({ points, onMapClick, selectedPoint, syncActive, onPointClick,
             const isCoincidenceDot = !syncActive && coincidencePair &&
               (p.id === coincidencePair.a.id || p.id === coincidencePair.b.id);
             const showThumb = p.showFace || isCoincidenceDot || isInsideSelection(p.x, p.y);
+            const isEvent = p.type === 'event';
             return (
               <div
                 key={i}
@@ -489,7 +970,7 @@ const WorldMap = ({ points, onMapClick, selectedPoint, syncActive, onPointClick,
                   pointerEvents: 'auto',
                   cursor: 'pointer',
                   transform: `translate(-50%, -50%) scale(${1 / Math.sqrt(zoom)})`,
-                  zIndex: showThumb ? 100 : 10,
+                  zIndex: isCoincidenceDot ? 150 : (isEvent ? 20 : (showThumb ? 100 : 10)),
                   '--dot-color': CATEGORY_COLORS[p.category] || DEFAULT_DOT_COLOR
                 }}
                 onClick={(e) => {
@@ -507,7 +988,7 @@ const WorldMap = ({ points, onMapClick, selectedPoint, syncActive, onPointClick,
                 <span className={`dot-label ${showThumb ? 'always-show' : ''}`}>{p.name}</span>
                 <div className="dot-tooltip">
                   <strong>{p.name}</strong>
-                  <span>{formatYear(p.start_year)}{p.end_year ? ` to ${formatYear(p.end_year)}` : ''}</span>
+                  <span>{lifespanText(p)}</span>
                   {p.category && <span className="dot-tooltip-cat">{p.category}</span>}
                 </div>
               </div>
@@ -544,9 +1025,16 @@ export default function App() {
   const [activeCategory, setActiveCategory] = useState('All');
   const [coincidences, setCoincidences] = useState([]);
   const [coincidenceIndex, setCoincidenceIndex] = useState(0);
-  const [selectedCoincidence, setSelectedCoincidence] = useState(null);
   const [zoneSelection, setZoneSelection] = useState(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [focusPerson, setFocusPerson] = useState(null);
   const [showSnapshot, setShowSnapshot] = useState(false);
+  const [pinnedRegion, setPinnedRegion] = useState(() => localStorage.getItem('pinnedRegion') || null);
+  const [autoplay, setAutoplay] = useState(false);
+  const [selectedEvent, setSelectedEvent] = useState(null);
+  const [eventBeamPair, setEventBeamPair] = useState(null);
+  const [cardDismissed, setCardDismissed] = useState(false);
+  const [geoAnchor, setGeoAnchor] = useState(null);
   const coincidencePair = coincidences[coincidenceIndex] || null;
 
   // Debounce displayYear -> year so API calls don't fire on every slider tick
@@ -565,16 +1053,21 @@ export default function App() {
       if (syncMode || coincidences.length < 2) return;
       if (e.key === 'ArrowRight') {
         setCoincidenceIndex(i => (i + 1) % coincidences.length);
-        setSelectedCoincidence(null);
+        setEventBeamPair(null);
+        setCardDismissed(false);
       }
       if (e.key === 'ArrowLeft') {
         setCoincidenceIndex(i => (i - 1 + coincidences.length) % coincidences.length);
-        setSelectedCoincidence(null);
+        setEventBeamPair(null);
+        setCardDismissed(false);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [syncMode, coincidences.length]);
+
+  // Reveal card whenever the active pair changes.
+  useEffect(() => { setCardDismissed(false); }, [coincidenceIndex, eventBeamPair]);
 
   useEffect(() => {
     if (syncMode) return;
@@ -586,33 +1079,62 @@ export default function App() {
           .map(d => {
             const pos = calculateXY(d.latitude, d.longitude);
             if (!pos) return null;
-            return {
-              ...d,
-              x: pos.x,
-              y: pos.y,
-              showFace: (d.importance_score || 0) >= FACE_THRESHOLD && d.type === 'person'
-            };
+            return { ...d, x: pos.x, y: pos.y, showFace: false };
           })
           .filter(p => p !== null);
+        // Mark the top 10 people with thumbnails as face-visible, regardless of era.
+        [...points]
+          .filter(p => p.type === 'person' && p.thumbnailUrl)
+          .sort((a, b) => (b.importance_score || 0) - (a.importance_score || 0))
+          .slice(0, 10)
+          .forEach(p => { p.showFace = true; });
         setHistoricalPoints(points);
-        setZoneSelection(null);
-        setCoincidences(findCoincidences(points));
-        setCoincidenceIndex(0);
-        setSelectedCoincidence(null);
+        setSelectedEvent(null);
+        setEventBeamPair(null);
       });
   }, [year, syncMode]);
 
+  // Recompute coincidences whenever points, zone selection, pinned region, focused person, or geo-anchor changes.
   useEffect(() => {
     if (!historicalPoints.length) return;
+    setCoincidenceIndex(0);
+
+    if (focusPerson) {
+      const pairs = findCoincidencesForPerson(focusPerson, historicalPoints);
+      if (pairs.length > 0) {
+        setCoincidences(pairs);
+        setFocusPerson(null);
+        return;
+      }
+      setFocusPerson(null);
+    }
+
     if (zoneSelection) {
       const pairs = findZoneCoincidences(historicalPoints, zoneSelection);
+      setCoincidences(pairs.length > 0 ? pairs : (
+        pinnedRegion
+          ? findPinnedRegionCoincidences(historicalPoints, REGIONS[pinnedRegion])
+          : findCoincidences(historicalPoints)
+      ));
+    } else if (geoAnchor) {
+      const pairs = findGeoAnchoredCoincidences(historicalPoints, geoAnchor.x, geoAnchor.y);
       setCoincidences(pairs.length > 0 ? pairs : findCoincidences(historicalPoints));
+    } else if (pinnedRegion) {
+      setCoincidences(findPinnedRegionCoincidences(historicalPoints, REGIONS[pinnedRegion]));
     } else {
       setCoincidences(findCoincidences(historicalPoints));
     }
-    setCoincidenceIndex(0);
-    setSelectedCoincidence(null);
-  }, [zoneSelection]);
+  }, [historicalPoints, zoneSelection, pinnedRegion, focusPerson, geoAnchor]);
+
+  // Autoplay: advance coincidence every 4s.
+  useEffect(() => {
+    if (!autoplay || syncMode) return;
+    const id = setInterval(() => {
+      setCoincidenceIndex(i => (i + 1) % Math.max(coincidences.length, 1));
+      setEventBeamPair(null);
+    }, 4000);
+    return () => clearInterval(id);
+  }, [autoplay, syncMode, coincidences.length]);
 
   useEffect(() => {
     if (syncMode && selectedEntity) {
@@ -631,7 +1153,7 @@ export default function App() {
                   ...d,
                   x: pos.x,
                   y: pos.y,
-                  showFace: (d.importance_score || 0) >= FACE_THRESHOLD && d.type === 'person'
+                  showFace: (d.importance_score || 0) >= 150 && d.type === 'person'
                 };
               })
               .filter(p => p !== null)
@@ -646,13 +1168,20 @@ export default function App() {
     setYear(entity.start_year);
     setDisplayYear(entity.start_year);
     setActiveCategory('All');
-    setSelectedCoincidence(null);
   };
 
-  const handleMapClick = region => {
-    fetch(`/api/search-region?year=${year}&lat=${region.lat}&lon=${region.lon}`)
-      .then(res => res.json())
-      .then(data => { if (data.length > 0) startSynchronicity(data[0]); });
+  const handleMapClick = ({ lat, lon, x, y }) => {
+    if (syncMode) {
+      fetch(`/api/search-region?year=${year}&lat=${lat}&lon=${lon}`)
+        .then(res => res.json())
+        .then(data => { if (data.length > 0) startSynchronicity(data[0]); });
+      return;
+    }
+    setGeoAnchor({ x, y });
+    setZoneSelection(null);
+    setCardDismissed(false);
+    setEventBeamPair(null);
+    setSelectedEvent(null);
   };
 
   const handleBack = () => {
@@ -661,8 +1190,55 @@ export default function App() {
     setContemporaries([]);
   };
 
+  const handlePersonClick = (person) => {
+    const pairs = findCoincidencesForPerson(person, historicalPoints);
+    if (pairs.length === 0) return;
+    setCoincidences(pairs);
+    setCoincidenceIndex(0);
+    setCardDismissed(false);
+    setEventBeamPair(null);
+    setSelectedEvent(null);
+  };
+
+  const handleSearchSelect = (person) => navigateToPerson(person);
+
+  const handlePinRegion = (name) => {
+    setPinnedRegion(name);
+    setGeoAnchor(null);
+    if (name) localStorage.setItem('pinnedRegion', name);
+    else localStorage.removeItem('pinnedRegion');
+    setAutoplay(false);
+  };
+
+  const handleEventClick = (event) => {
+    setSelectedEvent(event);
+    setAutoplay(false);
+    setEventBeamPair(null);
+  };
+
+  const navigateToPerson = (person) => {
+    const targetYear = person.start_year + 10;
+    setDisplayYear(targetYear);
+    setYear(targetYear);
+    setZoneSelection(null);
+    setGeoAnchor(null);
+    setCardDismissed(false);
+    setSearchOpen(false);
+    setSelectedEvent(null);
+    setEventBeamPair(null);
+    setFocusPerson(person);
+  };
+
+  const handleEventPersonSelect = (person) => navigateToPerson(person);
+
   const selectedPos = selectedEntity ? calculateXY(selectedEntity.latitude, selectedEntity.longitude) : null;
   if (selectedPos && selectedEntity) selectedPos.id = selectedEntity.id;
+
+  const activePair = eventBeamPair || coincidencePair;
+
+  const nearestEra = ERAS.reduce((best, era) =>
+    Math.abs(era.year - displayYear) < Math.abs(best.year - displayYear) ? era : best
+  );
 
   return (
     <div className="app-container">
@@ -672,14 +1248,27 @@ export default function App() {
           onMapClick={handleMapClick}
           selectedPoint={selectedPos}
           syncActive={syncMode}
-          onPointClick={startSynchronicity}
-          coincidencePair={coincidencePair}
-          onCoincidenceClick={setSelectedCoincidence}
-          onSelectionChange={setZoneSelection}
+          onPointClick={p => {
+            if (p.type === 'event') handleEventClick(p);
+            else handlePersonClick(p);
+          }}
+          coincidencePair={activePair}
+          onCoincidenceClick={() => {}}
+          onSelectionChange={sel => { setZoneSelection(sel); if (sel) setGeoAnchor(null); }}
+          geoAnchor={geoAnchor}
         />
       </div>
 
-      {showSnapshot && !syncMode && (
+      {selectedEvent && !syncMode && (
+        <EventPanel
+          event={selectedEvent}
+          region={pinnedRegion}
+          onPersonSelect={handleEventPersonSelect}
+          onClose={() => { setSelectedEvent(null); setEventBeamPair(null); }}
+        />
+      )}
+
+      {showSnapshot && !syncMode && !selectedEvent && (
         <YearSnapshotPanel
           points={historicalPoints}
           year={displayYear}
@@ -688,53 +1277,108 @@ export default function App() {
         />
       )}
 
-      {selectedCoincidence && (
+      {activePair && !syncMode && !cardDismissed && !selectedEvent && !showSnapshot && (
         <CoincidenceCard
-          pair={selectedCoincidence}
-          onDismiss={() => setSelectedCoincidence(null)}
+          pair={activePair}
+          onDismiss={() => setCardDismissed(true)}
+          onNext={() => {
+            setCoincidenceIndex(i => (i + 1) % coincidences.length);
+            setEventBeamPair(null);
+          }}
+          index={coincidenceIndex}
+          total={coincidences.length}
         />
+      )}
+
+      {searchOpen && (
+        <SearchOverlay onSelect={handleSearchSelect} onClose={() => setSearchOpen(false)} />
       )}
 
       <div className={`chaos-ui animate-fade-in ${syncMode ? 'minimized' : ''}`}>
         <div className="chaos-header">
-          {!syncMode && <Search onSelect={startSynchronicity} />}
           <div className="year-row">
-            <h1>{displayYear < 0 ? `${Math.abs(displayYear)} BCE` : `${displayYear} CE`}</h1>
-            {!syncMode && historicalPoints.length > 0 && (
-              <button
-                className={`snapshot-toggle-btn${showSnapshot ? ' active' : ''}`}
-                title="Who was alive this year?"
-                onClick={() => setShowSnapshot(s => !s)}
-              >
-                {historicalPoints.length} alive
-              </button>
-            )}
-            {!syncMode && coincidences.length > 1 && (
-              <button
-                className={`shuffle-btn${zoneSelection ? ' zone-active' : ''}`}
-                title="Next coincidence"
-                onClick={() => {
-                  setCoincidenceIndex(i => (i + 1) % coincidences.length);
-                  setSelectedCoincidence(null);
-                }}
-              >
-                {zoneSelection ? 'Zone ' : ''}{coincidenceIndex + 1} / {coincidences.length}
-              </button>
+            <div className="year-era-block">
+              <h1>{displayYear < 0 ? `${Math.abs(displayYear)} BCE` : `${displayYear} CE`}</h1>
+              {!syncMode && <span className="era-subtitle">{nearestEra.name}</span>}
+            </div>
+            {!syncMode && (
+              <div className="tl-controls">
+                <button className="search-icon-btn" title="Search a person" onClick={() => setSearchOpen(true)}>
+                  &#128269;
+                </button>
+                {historicalPoints.length > 0 && (
+                  <button
+                    className={`snapshot-toggle-btn${showSnapshot ? ' active' : ''}`}
+                    title="Who was alive this year?"
+                    onClick={() => setShowSnapshot(s => !s)}
+                  >
+                    {historicalPoints.length} alive
+                  </button>
+                )}
+                {coincidences.length > 1 && (
+                  <button
+                    className={`autoplay-btn${autoplay ? ' active' : ''}`}
+                    title={autoplay ? 'Pause autoplay' : 'Autoplay coincidences'}
+                    onClick={() => setAutoplay(a => !a)}
+                  >
+                    {autoplay ? '⏸' : '▶'}
+                  </button>
+                )}
+                {coincidences.length > 1 && (
+                  <button
+                    className={`shuffle-btn${zoneSelection || geoAnchor ? ' zone-active' : ''}`}
+                    title="Next coincidence"
+                    onClick={() => {
+                      setCoincidenceIndex(i => (i + 1) % coincidences.length);
+                      setEventBeamPair(null);
+                    }}
+                  >
+                    {coincidenceIndex + 1}&thinsp;/&thinsp;{coincidences.length} &rarr;
+                  </button>
+                )}
+              </div>
             )}
           </div>
-          {!syncMode && <p className="map-instructions">Scroll to Zoom · Alt + Drag to Highlight Zone · Arrow Keys to cycle coincidences</p>}
+          {!syncMode && (
+            <div className="region-chips-row">
+              {Object.keys(REGIONS).map(name => (
+                <button
+                  key={name}
+                  className={`region-chip${pinnedRegion === name ? ' active' : ''}`}
+                  onClick={() => handlePinRegion(pinnedRegion === name ? null : name)}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="timeline-wrapper">
-          <HistorySparkline data={densityData} currentYear={displayYear} onYearChange={v => { setDisplayYear(v); setYear(v); }} />
+          <HistorySparkline data={densityData} currentYear={displayYear} />
+          <div className="timeline-markers-strip">
+            {TIMELINE_MARKERS.map(m => (
+              <div
+                key={m.year}
+                className="timeline-marker"
+                style={{ left: `${yearToSlider(m.year)}%` }}
+                onClick={() => { setDisplayYear(m.year); setYear(m.year); }}
+                title={formatYear(m.year)}
+              >
+                <div className="tm-tick" />
+                <span className="tm-label">{m.label}</span>
+              </div>
+            ))}
+          </div>
           <input
             type="range"
-            min="-1374"
-            max="2024"
-            value={displayYear}
-            onChange={e => setDisplayYear(parseInt(e.target.value))}
+            min="0"
+            max="100"
+            step="0.05"
+            value={yearToSlider(displayYear)}
+            onChange={e => setDisplayYear(sliderToYear(parseFloat(e.target.value)))}
             className="chaos-slider"
             style={{
-              background: `linear-gradient(to right, var(--gold) 0%, var(--gold) ${((displayYear + 1374) / 3398) * 100}%, #e2e8f0 ${((displayYear + 1374) / 3398) * 100}%, #e2e8f0 100%)`
+              background: `linear-gradient(to right, var(--gold) 0%, var(--gold) ${yearToSlider(displayYear)}%, rgba(255,255,255,0.1) ${yearToSlider(displayYear)}%, rgba(255,255,255,0.1) 100%)`
             }}
           />
         </div>
@@ -764,8 +1408,9 @@ export default function App() {
                 {loadingSync ? <p className="status-msg">Scanning time...</p> : (
                   <div className="contemporaries-list">
                     {contemporaries.map(e => {
+                      const endOf = p => p.end_year ?? (p.alive ? 2026 : p.start_year + 65);
                       const overlapYrs = selectedEntity ? Math.max(0,
-                        Math.min(e.end_year || 2024, selectedEntity.end_year || 2024) -
+                        Math.min(endOf(e), endOf(selectedEntity)) -
                         Math.max(e.start_year, selectedEntity.start_year)
                       ) : 0;
                       return (
@@ -773,7 +1418,7 @@ export default function App() {
                           {e.thumbnailUrl && <img src={e.thumbnailUrl} alt="" />}
                           <div className="mini-info">
                             <strong>{e.name}</strong>
-                            <span>{formatYear(e.start_year)} to {formatYear(e.end_year || 2024)}</span>
+                            <span>{lifespanText(e)}</span>
                             <div className="mini-meta">
                               {e.category && <span className="cat-badge" style={{ '--cat-color': CATEGORY_COLORS[e.category] || DEFAULT_DOT_COLOR }}>{e.category}</span>}
                               {overlapYrs > 0 && <span className="overlap-badge">{overlapYrs} yrs shared</span>}
