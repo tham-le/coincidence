@@ -10,36 +10,24 @@ const sqlite3 = require('sqlite3').verbose();
 const CURATED = require('./curated_list');
 const { categoryFromOccupations } = require('./occupations');
 const MANUAL = require('./manual_figures');
+const {
+  UA, sleep, fetchFacts, fetchFallbacks, applyFallback, fetchSummary,
+} = require('./wikidata');
 
 const path = require('path');
 // Resolve next to this file, not the shell's working directory, so running
 // the script from the project root cannot create an empty database there.
 const db = new sqlite3.Database(path.join(__dirname, 'coincidence.db'));
-const UA = 'CoincidenceMap/1.0 (https://github.com/tham/coincidence; tham@kyber.tech)';
 const WP_API = 'https://en.wikipedia.org/w/api.php';
-const WP_REST = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
-const SPARQL_URL = 'https://query.wikidata.org/sparql';
 
 const TITLE_BATCH = 40;
 const SPARQL_BATCH = 100;
 const PAUSE_MS = 900;
 
-const PREC = { 11: 'day', 10: 'month', 9: 'year' };
 const ALIVE_BIRTH_CUTOFF = 1935;
 
 const run = (sql, p = []) => new Promise((res, rej) => db.run(sql, p, function (e) { e ? rej(e) : res(this); }));
 const get = (sql, p = []) => new Promise((res, rej) => db.get(sql, p, (e, r) => e ? rej(e) : res(r)));
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-function parseTime(value, precision) {
-  if (!value) return null;
-  const m = value.match(/^(-?)(\d{4,})-(\d{2})-(\d{2})/);
-  if (!m) return null;
-  const sign = m[1] === '-' ? -1 : 1;
-  const prec = PREC[parseInt(precision, 10)] || null;
-  if (!prec) return null;
-  return { year: sign * parseInt(m[2], 10), iso: `${m[1]}${m[2]}-${m[3]}-${m[4]}`, prec };
-}
 
 // Wikipedia resolves redirects for us, so "Ho Chi Minh" and a reign name both
 // land on the same Wikidata id.
@@ -66,143 +54,6 @@ async function resolveTitles(titles) {
     out.push({ title: original, resolved: page.title, qid: qid || null, missing: page.missing !== undefined });
   }
   return out;
-}
-
-async function fetchFacts(ids) {
-  const values = ids.map(id => `wd:${id}`).join(' ');
-  const query = `
-SELECT ?item ?itemLabel ?birth ?bprec ?death ?dprec ?sitelinks ?lat ?lon
-       (GROUP_CONCAT(DISTINCT STRAFTER(STR(?occ),"entity/"); separator=",") AS ?occs) WHERE {
-  VALUES ?item { ${values} }
-  OPTIONAL { ?item p:P569/psv:P569 ?bn . ?bn wikibase:timeValue ?birth ; wikibase:timePrecision ?bprec . }
-  OPTIONAL { ?item p:P570/psv:P570 ?dn . ?dn wikibase:timeValue ?death ; wikibase:timePrecision ?dprec . }
-  OPTIONAL { ?item wikibase:sitelinks ?sitelinks . }
-  OPTIONAL { ?item wdt:P106 ?occ . }
-  OPTIONAL {
-    ?item wdt:P19 ?birthPlace .
-    ?birthPlace wdt:P625 ?coord .
-    BIND(geof:latitude(?coord) AS ?lat)
-    BIND(geof:longitude(?coord) AS ?lon)
-  }
-  SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
-} GROUP BY ?item ?itemLabel ?birth ?bprec ?death ?dprec ?sitelinks ?lat ?lon`;
-
-  const res = await axios.get(SPARQL_URL, {
-    params: { query, format: 'json' },
-    headers: { 'User-Agent': UA, Accept: 'application/sparql-results+json' },
-    timeout: 90000,
-  });
-
-  const out = new Map();
-  for (const b of res.data.results.bindings) {
-    const id = b.item.value.split('/').pop();
-    const rec = {
-      label: b.itemLabel?.value || id,
-      birth: parseTime(b.birth?.value, b.bprec?.value),
-      death: parseTime(b.death?.value, b.dprec?.value),
-      sitelinks: b.sitelinks ? parseInt(b.sitelinks.value, 10) : 0,
-      lat: b.lat ? parseFloat(b.lat.value) : null,
-      lon: b.lon ? parseFloat(b.lon.value) : null,
-      occs: b.occs?.value ? b.occs.value.split(',').filter(Boolean) : [],
-    };
-    // Prefer the row that carries coordinates when an item appears twice.
-    const prev = out.get(id);
-    if (!prev || (prev.lat === null && rec.lat !== null)) out.set(id, rec);
-  }
-  return out;
-}
-
-// Wikidata records a birth place with coordinates for most Europeans and for
-// far fewer people elsewhere, so the first pass drops exactly the figures this
-// site exists to show. These fallbacks walk outward from the birth place to
-// the place of death, the place they worked, and finally the country, which is
-// enough to put a dot on a map at the right end of the world.
-async function fetchFallbacks(ids) {
-  const values = ids.map(id => `wd:${id}`).join(' ');
-  const query = `
-SELECT ?item ?deathLat ?deathLon ?workLat ?workLon ?countryLat ?countryLon ?floruit ?fprec WHERE {
-  VALUES ?item { ${values} }
-  OPTIONAL {
-    ?item wdt:P20 ?dp . ?dp wdt:P625 ?dc .
-    BIND(geof:latitude(?dc) AS ?deathLat) BIND(geof:longitude(?dc) AS ?deathLon)
-  }
-  OPTIONAL {
-    ?item wdt:P937 ?wp . ?wp wdt:P625 ?wc .
-    BIND(geof:latitude(?wc) AS ?workLat) BIND(geof:longitude(?wc) AS ?workLon)
-  }
-  OPTIONAL {
-    ?item wdt:P27 ?country . ?country wdt:P625 ?cc .
-    BIND(geof:latitude(?cc) AS ?countryLat) BIND(geof:longitude(?cc) AS ?countryLon)
-  }
-  OPTIONAL { ?item p:P1317/psv:P1317 ?fn . ?fn wikibase:timeValue ?floruit ; wikibase:timePrecision ?fprec . }
-}`;
-
-  const res = await axios.get(SPARQL_URL, {
-    params: { query, format: 'json' },
-    headers: { 'User-Agent': UA, Accept: 'application/sparql-results+json' },
-    timeout: 90000,
-  });
-
-  const out = new Map();
-  for (const b of res.data.results.bindings) {
-    const id = b.item.value.split('/').pop();
-    const num = k => (b[k] ? parseFloat(b[k].value) : null);
-    const rec = {
-      death: [num('deathLat'), num('deathLon')],
-      work: [num('workLat'), num('workLon')],
-      country: [num('countryLat'), num('countryLon')],
-      floruit: parseTime(b.floruit?.value, b.fprec?.value),
-    };
-    const prev = out.get(id);
-    // Keep the row that filled the most, since each OPTIONAL can come back
-    // on its own line.
-    const filled = r => [r.death[0], r.work[0], r.country[0], r.floruit].filter(v => v !== null && v !== undefined).length;
-    if (!prev || filled(rec) > filled(prev)) out.set(id, rec);
-  }
-  return out;
-}
-
-// Applies the fallbacks in order and reports which one was used, so the run
-// log shows how a figure got onto the map.
-function applyFallback(facts, fb) {
-  let via = null;
-  if ((facts.lat === null || facts.lon === null) && fb) {
-    for (const [key, label] of [['death', 'place of death'], ['work', 'place of work'], ['country', 'country']]) {
-      const [lat, lon] = fb[key];
-      if (lat !== null && lon !== null && !Number.isNaN(lat)) {
-        facts.lat = lat;
-        facts.lon = lon;
-        via = label;
-        break;
-      }
-    }
-  }
-  if (!facts.birth && fb?.floruit) {
-    // A floruit is when someone was active, not when they were born. Back off
-    // by a working lifetime so the lifespan bar is not obviously wrong, and
-    // keep the precision at year so no card ever claims a day.
-    facts.birth = { year: fb.floruit.year - 30, iso: null, prec: 'year' };
-    via = via ? `${via} + floruit` : 'floruit';
-  }
-  return via;
-}
-
-// The summary column holds the whole Wikipedia REST response as a JSON string,
-// which is what /api/entity hands back to the client untouched. Store the same
-// shape here or that endpoint will try to parse plain text as JSON.
-async function fetchSummary(title) {
-  try {
-    const res = await axios.get(WP_REST + encodeURIComponent(title.replace(/ /g, '_')), {
-      headers: { 'User-Agent': UA }, timeout: 20000,
-    });
-    if (res.data?.type === 'disambiguation') return { summary: null, thumbnail: null };
-    return {
-      summary: JSON.stringify(res.data),
-      thumbnail: res.data.thumbnail?.source || null,
-    };
-  } catch {
-    return { summary: null, thumbnail: null };
-  }
 }
 
 async function upsert(qid, title, facts, extra) {
