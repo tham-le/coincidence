@@ -95,13 +95,18 @@ type PairResult struct {
 	A *Entity `json:"a"`
 	B *Entity `json:"b"`
 
-	OverlapYears  int  `json:"overlap_years"`
-	OverlapDays   *int `json:"overlap_days,omitempty"`
-	OverlapStart  int  `json:"overlap_start"`
-	OverlapEnd    int  `json:"overlap_end"`
-	Overlaps      bool `json:"overlaps"`
-	GapYears      *int `json:"gap_years,omitempty"`
-	GapDays       *int `json:"gap_days,omitempty"`
+	OverlapYears int  `json:"overlap_years"`
+	OverlapDays  *int `json:"overlap_days,omitempty"`
+	OverlapStart int  `json:"overlap_start"`
+	OverlapEnd   int  `json:"overlap_end"`
+	Overlaps     bool `json:"overlaps"`
+	GapYears     *int `json:"gap_years,omitempty"`
+	GapDays      *int `json:"gap_days,omitempty"`
+
+	// Two people born in the same year is a coincidence in its own right, and
+	// one that a long shared lifetime otherwise hides.
+	SameBirthYear bool `json:"same_birth_year"`
+	BirthGapDays  *int `json:"birth_gap_days,omitempty"`
 	EndEstimatedA bool `json:"end_estimated_a"`
 	EndEstimatedB bool `json:"end_estimated_b"`
 
@@ -162,6 +167,12 @@ func buildPair(a, b *Entity) *PairResult {
 	}
 
 	res.Overlaps = true
+	res.SameBirthYear = a.StartYear == b.StartYear
+	if res.SameBirthYear && hasDayPrecision(a, true) && hasDayPrecision(b, true) {
+		d := int(math.Abs(aStart.Sub(bStart).Hours() / 24))
+		res.BirthGapDays = &d
+	}
+
 	// Days between the two boundary dates, not counting both endpoints. This
 	// is the number the headline needs: born on day 0, the other died on day N,
 	// so N days were left. Adding one would make the sentence off by a day.
@@ -216,6 +227,17 @@ func overlapHeadline(a, b *Entity, res *PairResult, days int) string {
 		return fmt.Sprintf("When %s was born, %s had %d days left to live.",
 			younger.Name, older.Name, days)
 	}
+	// Same year of birth beats the length of the overlap as the thing worth
+	// saying. Ho Chi Minh and Charles de Gaulle were both born in 1890, which
+	// "alive at the same time for 78 years" buries completely.
+	if res.SameBirthYear {
+		if res.BirthGapDays != nil && *res.BirthGapDays > 0 {
+			return fmt.Sprintf("%s and %s were born %s apart, in the same year.",
+				a.Name, b.Name, plural(*res.BirthGapDays, "day"))
+		}
+		return fmt.Sprintf("%s and %s were born in the same year, %s.",
+			a.Name, b.Name, fmtYearOnly(a.StartYear))
+	}
 	if res.OverlapYears == 0 {
 		return fmt.Sprintf("%s and %s were alive at the same time, for less than a year.",
 			a.Name, b.Name)
@@ -226,6 +248,13 @@ func overlapHeadline(a, b *Entity, res *PairResult, days int) string {
 	}
 	return fmt.Sprintf("%s and %s were alive at the same time for %d years.",
 		a.Name, b.Name, res.OverlapYears)
+}
+
+func fmtYearOnly(y int) string {
+	if y < 0 {
+		return strconv.Itoa(-y) + " BCE"
+	}
+	return strconv.Itoa(y)
 }
 
 // plural keeps "1 years" out of the interface.
@@ -272,6 +301,9 @@ func pairChips(a, b *Entity, res *PairResult, days int) []PairChip {
 		chips = append(chips, PairChip{"brief", "overlapped " + plural(days, "day")})
 	} else if res.Overlaps && res.OverlapYears < 5 {
 		chips = append(chips, PairChip{"brief", "overlapped " + plural(res.OverlapYears, "year")})
+	}
+	if res.SameBirthYear {
+		chips = append(chips, PairChip{"birth", "born the same year"})
 	}
 	if res.EndEstimatedA || res.EndEstimatedB {
 		chips = append(chips, PairChip{"estimate", "one death date is unknown"})
@@ -346,6 +378,17 @@ func surprise(a, b *Entity, res *PairResult) float64 {
 	// touch for three years over any pair a reader would recognise.
 	brevity := 0.6 + 0.4*math.Exp(-float64(res.OverlapYears)/15.0)
 
+	// The other kind of near-coincidence: born at the same moment on opposite
+	// sides of the world. Without this the brevity term buries every such pair,
+	// because sharing a birth year also means sharing a whole lifetime.
+	sameStart := 1.0
+	switch birthGap := abs(a.StartYear - b.StartYear); {
+	case birthGap == 0:
+		sameStart = 1.9
+	case birthGap <= 2:
+		sameStart = 1.4
+	}
+
 	// The product of the two normalized fames, not the mean, so one famous
 	// name cannot carry an unknown one into the reveal.
 	fame := (a.Fame / 100) * (b.Fame / 100)
@@ -359,7 +402,14 @@ func surprise(a, b *Entity, res *PairResult) float64 {
 		curated *= 1.25
 	}
 
-	return distance * domain * region * brevity * fame * curated
+	return distance * domain * region * brevity * sameStart * fame * curated
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 func queryEntities(query string, args ...any) ([]*Entity, error) {
