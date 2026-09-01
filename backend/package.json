@@ -1,14 +1,21 @@
 {
   "name": "coincidence-backend",
   "version": "1.0.0",
-  "description": "Backend for Global Synchronicity Timeline",
-  "main": "server.js",
+  "description": "Harvesting and enrichment scripts for Coincidence. The site itself is served by the Go server in ../server.",
+  "private": true,
+  "scripts": {
+    "migrate": "node migrate.js",
+    "enrich": "node enrich.js",
+    "seed": "node seed_curated.js",
+    "regions": "node enrich_regions.js",
+    "events": "node enrich_events.js",
+    "gaps": "node harvest_gaps.js",
+    "rank": "node rank.js",
+    "prune": "node prune.js",
+    "recategorize": "node recategorize.js"
+  },
   "dependencies": {
     "axios": "^1.16.1",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "pg": "^8.11.3",
     "sqlite3": "^6.0.1"
   }
 }
