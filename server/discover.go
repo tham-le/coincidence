@@ -69,7 +69,7 @@ func handleSameDay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	born, err := queryEntities(`SELECT `+entityColumns+`
+	born, err := queryEntities(`SELECT `+entityListColumns+`
 		FROM historical_entities
 		WHERE type = 'person' AND start_reliable = 1
 		  AND substr(start_date, 6, 5) = ?
@@ -81,7 +81,7 @@ func handleSameDay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	died, err := queryEntities(`SELECT `+entityColumns+`
+	died, err := queryEntities(`SELECT `+entityListColumns+`
 		FROM historical_entities
 		WHERE type = 'person' AND end_reliable = 1
 		  AND substr(end_date, 6, 5) = ?
@@ -216,7 +216,7 @@ func handleNearMiss(w http.ResponseWriter, r *http.Request) {
 		}
 		// Everyone who died just before the anchor was born, or was born just
 		// after the anchor died.
-		rows, err = queryEntities(`SELECT `+entityColumns+`
+		rows, err = queryEntities(`SELECT `+entityListColumns+`
 			FROM historical_entities
 			WHERE type = 'person' AND id != ?
 			  AND (COALESCE(fame,0) >= 70 OR curated = 1)
@@ -341,7 +341,7 @@ func fetchEntities(ids map[string]bool) (map[string]*Entity, error) {
 		args = append(args, id)
 	}
 	rows, err := queryEntities(
-		"SELECT "+entityColumns+" FROM historical_entities WHERE id IN ("+
+		"SELECT "+entityListColumns+" FROM historical_entities WHERE id IN ("+
 			strings.Join(placeholders, ",")+")", args...)
 	if err != nil {
 		return nil, err

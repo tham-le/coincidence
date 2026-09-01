@@ -327,7 +327,7 @@ func withThousands(n int) string {
 }
 
 func fetchEntity(id string) (*Entity, error) {
-	row := db.QueryRow("SELECT "+entityColumns+" FROM historical_entities WHERE id = ?", id)
+	row := db.QueryRow("SELECT "+entityListColumns+" FROM historical_entities WHERE id = ?", id)
 	return scanEntityFrom(row)
 }
 
@@ -444,7 +444,7 @@ func handleReveal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		anchors, err := queryEntities(`SELECT ` + entityColumns + `
+		anchors, err := queryEntities(`SELECT ` + entityListColumns + `
 			FROM historical_entities
 			WHERE type = 'person' AND start_year IS NOT NULL
 			  AND (curated = 1 OR COALESCE(fame,0) >= 85)
@@ -458,7 +458,7 @@ func handleReveal(w http.ResponseWriter, r *http.Request) {
 
 	// Candidates that were alive at the same time, sampled at random so the
 	// same pair does not come back every time.
-	candidates, err := queryEntities(`SELECT `+entityColumns+`
+	candidates, err := queryEntities(`SELECT `+entityListColumns+`
 		FROM historical_entities
 		WHERE type = 'person' AND id != ?
 		  AND start_year <= ? AND `+effEnd+` >= ?
@@ -507,7 +507,7 @@ func handleYearCard(w http.ResponseWriter, r *http.Request) {
 		perRegion = n
 	}
 
-	rows, err := queryEntities(`SELECT `+entityColumns+`
+	rows, err := queryEntities(`SELECT `+entityListColumns+`
 		FROM historical_entities
 		WHERE start_year <= ? AND `+effEnd+` >= ?
 		ORDER BY COALESCE(fame,0) + CASE WHEN curated = 1 THEN 8 ELSE 0 END DESC
@@ -641,7 +641,7 @@ func handleWaves(w http.ResponseWriter, r *http.Request) {
 		if !b.IsWave {
 			continue
 		}
-		ex, err := queryEntities(`SELECT `+entityColumns+`
+		ex, err := queryEntities(`SELECT `+entityListColumns+`
 			FROM historical_entities
 			WHERE `+where+` AND start_year BETWEEN ? AND ?
 			ORDER BY COALESCE(fame,0) DESC LIMIT 6`,
@@ -724,7 +724,7 @@ func handleDaily(w http.ResponseWriter, r *http.Request) {
 	const stride = 7919
 	offset := int((dayNumber*stride)%int64(poolSize)+int64(poolSize)) % poolSize
 
-	anchors, err := queryEntities(`SELECT `+entityColumns+`
+	anchors, err := queryEntities(`SELECT `+entityListColumns+`
 		FROM historical_entities
 		WHERE type = 'person' AND curated = 1 AND start_year IS NOT NULL
 		ORDER BY id LIMIT 1 OFFSET ?`, offset)
@@ -734,7 +734,7 @@ func handleDaily(w http.ResponseWriter, r *http.Request) {
 	}
 	anchor := anchors[0]
 
-	candidates, err := queryEntities(`SELECT `+entityColumns+`
+	candidates, err := queryEntities(`SELECT `+entityListColumns+`
 		FROM historical_entities
 		WHERE type = 'person' AND id != ?
 		  AND start_year <= ? AND `+effEnd+` >= ?

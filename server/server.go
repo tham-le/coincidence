@@ -73,12 +73,27 @@ const currentYear = 2026
 // JSON always says the value was estimated so the UI can avoid stating it.
 const assumedLifespan = 65
 
-// entityColumns is the select list every handler shares, so scanEntity and the
-// query always agree on column order.
-const entityColumns = `id,name,wpTitle,type,start_year,end_year,latitude,longitude,
-	importance_score,thumbnailUrl,category,summary,start_date,end_date,date_prec,
+// The select lists every handler shares, so scanEntity and the query always
+// agree on column order.
+//
+// summary holds the whole Wikipedia REST response, about 2.5 KB per row. Only
+// the single-entity endpoint has any use for it; sending it with a list of
+// sixty people made two thirds of that response dead weight. The lists get the
+// first part of the extract instead, which is all any of them could show.
+const entityHead = `id,name,wpTitle,type,start_year,end_year,latitude,longitude,
+	importance_score,thumbnailUrl,category,`
+
+const entityTail = `,substr(json_extract(summary,'$.extract'),1,300),
+	start_date,end_date,date_prec,
 	COALESCE(fame,0),COALESCE(curated,0),COALESCE(alive,0),region,
 	COALESCE(start_reliable,0),COALESCE(end_reliable,0)`
+
+// entityColumns carries the full summary. Use it only where it is displayed.
+const entityColumns = entityHead + "summary" + entityTail
+
+// entityListColumns is the same shape with the blob left out, so scanning code
+// needs no variant.
+const entityListColumns = entityHead + "NULL" + entityTail
 
 // effEnd is the year a lifespan effectively ends. An unknown death year would
 // otherwise drop the row out of every BETWEEN, which is what used to happen to
@@ -113,6 +128,9 @@ type Entity struct {
 	ThumbnailURL  *string `json:"thumbnailUrl"`
 	Category      *string `json:"category"`
 	Summary       *string `json:"summary,omitempty"`
+	// Extract is the first part of the Wikipedia summary, sent with lists in
+	// place of the full blob.
+	Extract       *string `json:"extract,omitempty"`
 	SyncScore     float64 `json:"sync_score,omitempty"`
 	FairnessScore float64 `json:"fairness_score,omitempty"`
 	RegionWeight  float64 `json:"region_weight,omitempty"`
@@ -138,14 +156,14 @@ type scanner interface{ Scan(dest ...any) error }
 func scanEntityFrom(s scanner, extra ...any) (*Entity, error) {
 	var e Entity
 	var endYear sql.NullInt64
-	var thumbnailURL, category, summary sql.NullString
+	var thumbnailURL, category, summary, extract sql.NullString
 	var startDate, endDate, datePrec, region sql.NullString
 	var curated, alive, startReliable, endReliable int
 
 	dest := []any{
 		&e.ID, &e.Name, &e.WpTitle, &e.Type,
 		&e.StartYear, &endYear, &e.Latitude, &e.Longitude,
-		&e.ImportanceScore, &thumbnailURL, &category, &summary,
+		&e.ImportanceScore, &thumbnailURL, &category, &summary, &extract,
 		&startDate, &endDate, &datePrec,
 		&e.Fame, &curated, &alive, &region, &startReliable, &endReliable,
 	}
@@ -166,7 +184,8 @@ func scanEntityFrom(s scanner, extra ...any) (*Entity, error) {
 		src sql.NullString
 		dst **string
 	}{
-		{thumbnailURL, &e.ThumbnailURL}, {category, &e.Category}, {summary, &e.Summary},
+		{thumbnailURL, &e.ThumbnailURL}, {category, &e.Category},
+		{summary, &e.Summary}, {extract, &e.Extract},
 		{startDate, &e.StartDate}, {endDate, &e.EndDate}, {datePrec, &e.DatePrecision},
 		{region, &e.Region},
 	} {
@@ -260,6 +279,8 @@ func handleEntity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The one endpoint that shows the Wikipedia summary, so the one that asks
+	// for it.
 	rows, err := db.Query(
 		"SELECT "+entityColumns+" FROM historical_entities WHERE id = ?",
 		id,
@@ -354,7 +375,7 @@ func handleSearchName(w http.ResponseWriter, r *http.Request) {
 	like := "%" + q + "%"
 	prefix := q + "%"
 	rows, err := db.Query(`
-		SELECT `+entityColumns+`, MIN(match_rank) AS match_rank
+		SELECT `+entityListColumns+`, MIN(match_rank) AS match_rank
 		FROM (
 			SELECT e.*, CASE
 				WHEN e.name = ?        THEN 0
@@ -414,7 +435,7 @@ func handleContemporaries(w http.ResponseWriter, r *http.Request) {
 
 	// Two lifespans overlap when each starts before the other ends. Written
 	// this way it needs no OR branches and it works for an unknown death year.
-	sqlStr := `SELECT ` + entityColumns + `,
+	sqlStr := `SELECT ` + entityListColumns + `,
 		CASE WHEN (latitude BETWEEN 35 AND 72) AND (longitude BETWEEN -25 AND 45) THEN 0.3 ELSE 1.0 END as region_weight
 		FROM historical_entities
 		WHERE id != ?
@@ -536,7 +557,7 @@ func handleSearchRegion(w http.ResponseWriter, r *http.Request) {
 	windowStart := targetYear - 30
 	windowEnd := targetYear + 30
 
-	rows, err := db.Query(`SELECT `+entityColumns+`
+	rows, err := db.Query(`SELECT `+entityListColumns+`
 		FROM historical_entities
 		WHERE type = 'person'
 		AND start_year <= ? AND `+effEnd+` >= ?
@@ -584,7 +605,7 @@ func handleYearSummary(w http.ResponseWriter, r *http.Request) {
 	// fame is already normalized within region and century, so it is the
 	// fairness score now. Curated rows get a nudge so a hand-picked figure
 	// is not edged out by a well-linked minor one.
-	rows, err := db.Query(`SELECT `+entityColumns+`,
+	rows, err := db.Query(`SELECT `+entityListColumns+`,
 		COALESCE(fame,0) + CASE WHEN curated = 1 THEN 8 ELSE 0 END as fairness_score
 		FROM historical_entities
 		WHERE start_year <= ? AND `+effEnd+` >= ?
@@ -694,7 +715,7 @@ func handleEventContemporaries(w http.ResponseWriter, r *http.Request) {
 		lonMin, _ := strconv.ParseFloat(lonMinStr, 64)
 		lonMax, _ := strconv.ParseFloat(lonMaxStr, 64)
 		rows, err = db.Query(`
-			SELECT `+entityColumns+`
+			SELECT `+entityListColumns+`
 			FROM historical_entities
 			WHERE type = 'person'
 			AND start_year <= ? AND `+effEnd+` >= ?
@@ -706,7 +727,7 @@ func handleEventContemporaries(w http.ResponseWriter, r *http.Request) {
 		)
 	} else {
 		rows, err = db.Query(`
-			SELECT `+entityColumns+`
+			SELECT `+entityListColumns+`
 			FROM historical_entities
 			WHERE type = 'person'
 			AND start_year <= ? AND `+effEnd+` >= ?
