@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,52 +15,166 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"golang.org/x/time/rate"
 	_ "modernc.org/sqlite"
 )
 
 var db *sql.DB
 
-type Entity struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	WpTitle         string   `json:"wpTitle"`
-	Type            string   `json:"type"`
-	StartYear       int      `json:"start_year"`
-	EndYear         int      `json:"end_year"`
-	Latitude        float64  `json:"latitude"`
-	Longitude       float64  `json:"longitude"`
-	ImportanceScore int      `json:"importance_score"`
-	ThumbnailURL    *string  `json:"thumbnailUrl"`
-	Category        *string  `json:"category"`
-	Summary         *string  `json:"summary,omitempty"`
-	SyncScore       float64  `json:"sync_score,omitempty"`
-	FairnessScore   float64  `json:"fairness_score,omitempty"`
-	RegionWeight    float64  `json:"region_weight,omitempty"`
+var httpClient = &http.Client{Timeout: 5 * time.Second}
+
+type visitor struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
 }
 
-func scanEntity(rows *sql.Rows) (*Entity, error) {
+var (
+	visitors   = make(map[string]*visitor)
+	visitorsMu sync.Mutex
+)
+
+func getVisitor(ip string) *rate.Limiter {
+	visitorsMu.Lock()
+	defer visitorsMu.Unlock()
+	v, ok := visitors[ip]
+	if !ok {
+		lim := rate.NewLimiter(rate.Every(time.Minute/60), 20)
+		visitors[ip] = &visitor{limiter: lim, lastSeen: time.Now()}
+		return lim
+	}
+	v.lastSeen = time.Now()
+	return v.limiter
+}
+
+func cleanupVisitors() {
+	for {
+		time.Sleep(time.Minute)
+		visitorsMu.Lock()
+		for ip, v := range visitors {
+			if time.Since(v.lastSeen) > 3*time.Minute {
+				delete(visitors, ip)
+			}
+		}
+		visitorsMu.Unlock()
+	}
+}
+
+// Present year, used as the end of a living person's lifespan.
+const currentYear = 2026
+
+// A death year we do not know. Only used to keep overlap queries working; the
+// JSON always says the value was estimated so the UI can avoid stating it.
+const assumedLifespan = 65
+
+// entityColumns is the select list every handler shares, so scanEntity and the
+// query always agree on column order.
+const entityColumns = `id,name,wpTitle,type,start_year,end_year,latitude,longitude,
+	importance_score,thumbnailUrl,category,summary,start_date,end_date,date_prec,
+	COALESCE(fame,0),COALESCE(curated,0),COALESCE(alive,0),region,
+	COALESCE(start_reliable,0),COALESCE(end_reliable,0)`
+
+// effEnd is the year a lifespan effectively ends. An unknown death year would
+// otherwise drop the row out of every BETWEEN, which is what used to happen to
+// everyone still living.
+var effEnd = fmt.Sprintf(
+	"COALESCE(end_year, CASE WHEN alive = 1 THEN %d ELSE start_year + %d END)",
+	currentYear, assumedLifespan)
+
+type Entity struct {
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	WpTitle         string  `json:"wpTitle"`
+	Type            string  `json:"type"`
+	StartYear       int     `json:"start_year"`
+	EndYear         *int    `json:"end_year"`
+	StartDate       *string `json:"start_date,omitempty"`
+	EndDate         *string `json:"end_date,omitempty"`
+	DatePrecision   *string `json:"date_precision,omitempty"`
+	Latitude        float64 `json:"latitude"`
+	Longitude       float64 `json:"longitude"`
+	ImportanceScore int     `json:"importance_score"`
+	Fame            float64 `json:"fame"`
+	Curated         bool    `json:"curated"`
+	Alive           bool    `json:"alive"`
+	Region          *string `json:"region,omitempty"`
+	// Birth and death are flagged separately: a date early enough that its
+	// exact day is a tradition rather than a record cannot be used for
+	// anything that counts days. One combined flag hid recorded death dates
+	// behind an unrelated birth date.
+	StartReliable bool    `json:"start_reliable"`
+	EndReliable   bool    `json:"end_reliable"`
+	ThumbnailURL  *string `json:"thumbnailUrl"`
+	Category      *string `json:"category"`
+	Summary       *string `json:"summary,omitempty"`
+	SyncScore     float64 `json:"sync_score,omitempty"`
+	FairnessScore float64 `json:"fairness_score,omitempty"`
+	RegionWeight  float64 `json:"region_weight,omitempty"`
+}
+
+// EffectiveEnd mirrors the effEnd SQL so Go-side scoring agrees with queries.
+func (e *Entity) EffectiveEnd() int {
+	if e.EndYear != nil {
+		return *e.EndYear
+	}
+	if e.Alive {
+		return currentYear
+	}
+	return e.StartYear + assumedLifespan
+}
+
+// EndIsEstimated reports whether EffectiveEnd was invented rather than known.
+func (e *Entity) EndIsEstimated() bool { return e.EndYear == nil }
+
+// scanRow accepts either *sql.Rows or *sql.Row.
+type scanner interface{ Scan(dest ...any) error }
+
+func scanEntityFrom(s scanner, extra ...any) (*Entity, error) {
 	var e Entity
+	var endYear sql.NullInt64
 	var thumbnailURL, category, summary sql.NullString
-	err := rows.Scan(
+	var startDate, endDate, datePrec, region sql.NullString
+	var curated, alive, startReliable, endReliable int
+
+	dest := []any{
 		&e.ID, &e.Name, &e.WpTitle, &e.Type,
-		&e.StartYear, &e.EndYear, &e.Latitude, &e.Longitude,
+		&e.StartYear, &endYear, &e.Latitude, &e.Longitude,
 		&e.ImportanceScore, &thumbnailURL, &category, &summary,
-	)
-	if err != nil {
+		&startDate, &endDate, &datePrec,
+		&e.Fame, &curated, &alive, &region, &startReliable, &endReliable,
+	}
+	dest = append(dest, extra...)
+
+	if err := s.Scan(dest...); err != nil {
 		return nil, err
 	}
-	if thumbnailURL.Valid {
-		e.ThumbnailURL = &thumbnailURL.String
+	if endYear.Valid {
+		v := int(endYear.Int64)
+		e.EndYear = &v
 	}
-	if category.Valid {
-		e.Category = &category.String
-	}
-	if summary.Valid {
-		e.Summary = &summary.String
+	e.Curated = curated == 1
+	e.Alive = alive == 1
+	e.StartReliable = startReliable == 1
+	e.EndReliable = endReliable == 1
+	for _, f := range []struct {
+		src sql.NullString
+		dst **string
+	}{
+		{thumbnailURL, &e.ThumbnailURL}, {category, &e.Category}, {summary, &e.Summary},
+		{startDate, &e.StartDate}, {endDate, &e.EndDate}, {datePrec, &e.DatePrecision},
+		{region, &e.Region},
+	} {
+		if f.src.Valid {
+			v := f.src.String
+			*f.dst = &v
+		}
 	}
 	return &e, nil
 }
+
+func scanEntity(rows *sql.Rows) (*Entity, error) { return scanEntityFrom(rows) }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -80,6 +195,29 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func rateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			ip = r.RemoteAddr
+		}
+		if !getVisitor(ip).Allow() {
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func handleEntity(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/entity/")
 	if id == "" {
@@ -88,7 +226,7 @@ func handleEntity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := db.Query(
-		"SELECT id,name,wpTitle,type,start_year,end_year,latitude,longitude,importance_score,thumbnailUrl,category,summary FROM historical_entities WHERE id = ?",
+		"SELECT "+entityColumns+" FROM historical_entities WHERE id = ?",
 		id,
 	)
 	if err != nil {
@@ -133,7 +271,7 @@ func handleEntity(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CoincidenceBot/1.0)")
 	req.Header.Set("Accept", "application/json; charset=utf-8")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		writeJSON(w, http.StatusOK, e)
 		return
@@ -175,9 +313,33 @@ func handleSearchName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.Query(
-		"SELECT id,name,wpTitle,type,start_year,end_year,latitude,longitude,importance_score,thumbnailUrl,category,summary FROM historical_entities WHERE name LIKE ? ORDER BY importance_score DESC LIMIT 10",
-		"%"+q+"%",
+	// Search the alias table as well as the name column. Without this, a row
+	// whose Wikidata label is a birth name is unreachable by the name people
+	// actually know: "Quang Trung" never matched "Nguyễn Huệ".
+	like := "%" + q + "%"
+	prefix := q + "%"
+	rows, err := db.Query(`
+		SELECT `+entityColumns+`, MIN(match_rank) AS match_rank
+		FROM (
+			SELECT e.*, CASE
+				WHEN e.name = ?        THEN 0
+				WHEN e.name LIKE ?     THEN 1
+				ELSE 2 END AS match_rank
+			FROM historical_entities e WHERE e.name LIKE ?
+			UNION ALL
+			SELECT e.*, CASE
+				WHEN a.alias = ?       THEN 0
+				WHEN a.alias LIKE ?    THEN 1
+				ELSE 3 END AS match_rank
+			FROM historical_entities e
+			JOIN entity_aliases a ON a.entity_id = e.id
+			WHERE a.alias LIKE ?
+		)
+		GROUP BY id
+		ORDER BY match_rank ASC, COALESCE(fame,0) DESC, importance_score DESC
+		LIMIT 12`,
+		q, prefix, like,
+		q, prefix, like,
 	)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
@@ -187,7 +349,8 @@ func handleSearchName(w http.ResponseWriter, r *http.Request) {
 
 	var results []*Entity
 	for rows.Next() {
-		e, err := scanEntity(rows)
+		var rank int
+		e, err := scanEntityFrom(rows, &rank)
 		if err != nil {
 			continue
 		}
@@ -214,16 +377,14 @@ func handleContemporaries(w http.ResponseWriter, r *http.Request) {
 		span = 1
 	}
 
-	sqlStr := `SELECT id,name,wpTitle,type,start_year,end_year,latitude,longitude,importance_score,thumbnailUrl,category,summary,
+	// Two lifespans overlap when each starts before the other ends. Written
+	// this way it needs no OR branches and it works for an unknown death year.
+	sqlStr := `SELECT ` + entityColumns + `,
 		CASE WHEN (latitude BETWEEN 35 AND 72) AND (longitude BETWEEN -25 AND 45) THEN 0.3 ELSE 1.0 END as region_weight
 		FROM historical_entities
 		WHERE id != ?
-		AND (
-			(start_year BETWEEN ? AND ?) OR
-			(end_year BETWEEN ? AND ?) OR
-			(start_year <= ? AND end_year >= ?)
-		)`
-	params := []any{excludeID, s, e, s, e, s, e}
+		AND start_year <= ? AND ` + effEnd + ` >= ?`
+	params := []any{excludeID, e, s}
 
 	if category != "" && category != "All" {
 		sqlStr += " AND LOWER(category) = ?"
@@ -245,38 +406,25 @@ func handleContemporaries(w http.ResponseWriter, r *http.Request) {
 
 	var scored []ScoredEntity
 	for rows.Next() {
-		var ent Entity
-		var thumbnailURL, cat, summary sql.NullString
 		var regionWeight float64
-		err := rows.Scan(
-			&ent.ID, &ent.Name, &ent.WpTitle, &ent.Type,
-			&ent.StartYear, &ent.EndYear, &ent.Latitude, &ent.Longitude,
-			&ent.ImportanceScore, &thumbnailURL, &cat, &summary, &regionWeight,
-		)
+		ent, err := scanEntityFrom(rows, &regionWeight)
 		if err != nil {
 			continue
 		}
-		if thumbnailURL.Valid {
-			ent.ThumbnailURL = &thumbnailURL.String
-		}
-		if cat.Valid {
-			ent.Category = &cat.String
-		}
-		if summary.Valid {
-			ent.Summary = &summary.String
-		}
 
 		overlapStart := math.Max(float64(activeStart), float64(ent.StartYear+18))
-		overlapEnd := math.Min(float64(e), float64(ent.EndYear))
+		overlapEnd := math.Min(float64(e), float64(ent.EffectiveEnd()))
 		overlap := math.Max(0, overlapEnd-overlapStart)
 		temporalScore := overlap / span
 
-		dist := math.Sqrt(math.Pow(ent.Latitude-focusLat, 2) + math.Pow(ent.Longitude-focusLon, 2))
-		symmetryBoost := 1 + (dist / 180)
+		dist := haversineKm(ent.Latitude, ent.Longitude, focusLat, focusLon)
+		symmetryBoost := 1 + (dist / maxEarthDistanceKm)
 
-		syncScore := temporalScore * symmetryBoost * float64(ent.ImportanceScore) * regionWeight
+		// fame already carries the regional correction, so the old European
+		// discount would apply it twice.
+		syncScore := temporalScore * symmetryBoost * ent.Fame
 
-		scored = append(scored, ScoredEntity{Entity: ent, RegionWeight: regionWeight, SyncScore: syncScore})
+		scored = append(scored, ScoredEntity{Entity: *ent, RegionWeight: regionWeight, SyncScore: syncScore})
 	}
 
 	sort.Slice(scored, func(i, j int) bool {
@@ -353,12 +501,13 @@ func handleSearchRegion(w http.ResponseWriter, r *http.Request) {
 	windowStart := targetYear - 30
 	windowEnd := targetYear + 30
 
-	rows, err := db.Query(`SELECT id,name,wpTitle,type,start_year,end_year,latitude,longitude,importance_score,thumbnailUrl,category,summary
+	rows, err := db.Query(`SELECT `+entityColumns+`
 		FROM historical_entities
-		WHERE (start_year <= ? AND end_year >= ?)
+		WHERE type = 'person'
+		AND start_year <= ? AND `+effEnd+` >= ?
 		AND (latitude BETWEEN ? AND ?)
 		AND (longitude BETWEEN ? AND ?)
-		ORDER BY importance_score DESC
+		ORDER BY COALESCE(fame,0) DESC
 		LIMIT 10`,
 		windowEnd, windowStart,
 		targetLat-9, targetLat+9,
@@ -397,14 +546,13 @@ func handleYearSummary(w http.ResponseWriter, r *http.Request) {
 		limit = 100
 	}
 
-	rows, err := db.Query(`SELECT id,name,wpTitle,type,start_year,end_year,latitude,longitude,importance_score,thumbnailUrl,category,summary,
-		CASE
-			WHEN (latitude BETWEEN 35 AND 72) AND (longitude BETWEEN -25 AND 45)
-			THEN importance_score * 0.3
-			ELSE CAST(importance_score AS REAL)
-		END as fairness_score
+	// fame is already normalized within region and century, so it is the
+	// fairness score now. Curated rows get a nudge so a hand-picked figure
+	// is not edged out by a well-linked minor one.
+	rows, err := db.Query(`SELECT `+entityColumns+`,
+		COALESCE(fame,0) + CASE WHEN curated = 1 THEN 8 ELSE 0 END as fairness_score
 		FROM historical_entities
-		WHERE (start_year <= ? AND end_year >= ?)
+		WHERE start_year <= ? AND `+effEnd+` >= ?
 		ORDER BY fairness_score DESC
 		LIMIT 400`,
 		targetYear, targetYear,
@@ -422,27 +570,12 @@ func handleYearSummary(w http.ResponseWriter, r *http.Request) {
 
 	var pool []ScoredEntity
 	for rows.Next() {
-		var ent Entity
-		var thumbnailURL, cat, summary sql.NullString
 		var fairnessScore float64
-		err := rows.Scan(
-			&ent.ID, &ent.Name, &ent.WpTitle, &ent.Type,
-			&ent.StartYear, &ent.EndYear, &ent.Latitude, &ent.Longitude,
-			&ent.ImportanceScore, &thumbnailURL, &cat, &summary, &fairnessScore,
-		)
+		ent, err := scanEntityFrom(rows, &fairnessScore)
 		if err != nil {
 			continue
 		}
-		if thumbnailURL.Valid {
-			ent.ThumbnailURL = &thumbnailURL.String
-		}
-		if cat.Valid {
-			ent.Category = &cat.String
-		}
-		if summary.Valid {
-			ent.Summary = &summary.String
-		}
-		pool = append(pool, ScoredEntity{Entity: ent, FairnessScore: fairnessScore})
+		pool = append(pool, ScoredEntity{Entity: *ent, FairnessScore: fairnessScore})
 	}
 
 	if len(pool) == 0 {
@@ -450,15 +583,18 @@ func handleYearSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Category balancing: top 3 per major category first
+	// Category balancing: take the top few of each so one busy category cannot
+	// fill the map on its own.
 	categoryVariants := map[string][]string{
-		"Leaders":      {"leaders", "leader", "person", "global history"},
-		"Scientists":   {"scientists", "scientist"},
-		"Artists":      {"artists", "artist"},
-		"Philosophers": {"philosophers", "philosopher"},
-		"Events":       {"event", "events"},
+		"Leaders":    {"leaders"},
+		"Scientists": {"scientists"},
+		"Artists":    {"artists"},
+		"Thinkers":   {"thinkers"},
+		"Military":   {"military"},
+		"Explorers":  {"explorers"},
+		"Events":     {"events", "wars", "battles", "revolutions"},
 	}
-	catOrder := []string{"Leaders", "Scientists", "Artists", "Philosophers", "Events"}
+	catOrder := []string{"Leaders", "Thinkers", "Artists", "Scientists", "Military", "Explorers", "Events"}
 
 	seen := map[string]bool{}
 	var balanced []ScoredEntity
@@ -501,6 +637,69 @@ func handleYearSummary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, balanced)
 }
 
+func handleEventContemporaries(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	start, _ := strconv.Atoi(q.Get("start"))
+	end, _ := strconv.Atoi(q.Get("end"))
+	if end == 0 {
+		end = start + 10
+	}
+
+	latMinStr := q.Get("latMin")
+	latMaxStr := q.Get("latMax")
+	lonMinStr := q.Get("lonMin")
+	lonMaxStr := q.Get("lonMax")
+	hasRegion := latMinStr != "" && latMaxStr != "" && lonMinStr != "" && lonMaxStr != ""
+
+	var rows *sql.Rows
+	var err error
+	if hasRegion {
+		latMin, _ := strconv.ParseFloat(latMinStr, 64)
+		latMax, _ := strconv.ParseFloat(latMaxStr, 64)
+		lonMin, _ := strconv.ParseFloat(lonMinStr, 64)
+		lonMax, _ := strconv.ParseFloat(lonMaxStr, 64)
+		rows, err = db.Query(`
+			SELECT `+entityColumns+`
+			FROM historical_entities
+			WHERE type = 'person'
+			AND start_year <= ? AND `+effEnd+` >= ?
+			AND COALESCE(fame,0) >= 20
+			AND latitude BETWEEN ? AND ?
+			AND longitude BETWEEN ? AND ?
+			ORDER BY COALESCE(fame,0) DESC LIMIT 30`,
+			end, start, latMin, latMax, lonMin, lonMax,
+		)
+	} else {
+		rows, err = db.Query(`
+			SELECT `+entityColumns+`
+			FROM historical_entities
+			WHERE type = 'person'
+			AND start_year <= ? AND `+effEnd+` >= ?
+			AND COALESCE(fame,0) >= 20
+			ORDER BY COALESCE(fame,0) DESC LIMIT 30`,
+			end, start,
+		)
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
+		return
+	}
+	defer rows.Close()
+
+	var results []*Entity
+	for rows.Next() {
+		e, err := scanEntity(rows)
+		if err != nil {
+			continue
+		}
+		results = append(results, e)
+	}
+	if results == nil {
+		results = []*Entity{}
+	}
+	writeJSON(w, http.StatusOK, results)
+}
+
 func main() {
 	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
@@ -524,6 +723,17 @@ func main() {
 	mux.HandleFunc("/api/history-density", handleHistoryDensity)
 	mux.HandleFunc("/api/search-region", handleSearchRegion)
 	mux.HandleFunc("/api/year-summary", handleYearSummary)
+	mux.HandleFunc("/api/event-contemporaries", handleEventContemporaries)
+	mux.HandleFunc("/api/pair", handlePair)
+	mux.HandleFunc("/api/reveal", handleReveal)
+	mux.HandleFunc("/api/year-card", handleYearCard)
+	mux.HandleFunc("/api/waves", handleWaves)
+	mux.HandleFunc("/api/wave-kinds", handleWaveKinds)
+	mux.HandleFunc("/api/daily", handleDaily)
+	mux.HandleFunc("/api/card", handleCard)
+	mux.HandleFunc("/api/same-day", handleSameDay)
+	mux.HandleFunc("/api/shared-birthday", handleSharedBirthday)
+	mux.HandleFunc("/api/near-miss", handleNearMiss)
 
 	// Static files
 	buildPath := os.Getenv("FRONTEND_BUILD")
@@ -532,14 +742,23 @@ func main() {
 	}
 	absPath, _ := filepath.Abs(buildPath)
 	fs := http.FileServer(http.Dir(absPath))
+	indexPath := filepath.Join(absPath, "index.html")
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// SPA fallback
 		path := filepath.Join(absPath, r.URL.Path)
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			http.ServeFile(w, r, filepath.Join(absPath, "index.html"))
+		if _, err := os.Stat(path); err == nil && r.URL.Path != "/" {
+			fs.ServeHTTP(w, r)
 			return
 		}
-		fs.ServeHTTP(w, r)
+		// SPA fallback. The crawler that fetches a shared link never runs the
+		// app, so the social tags have to be filled in here or the link
+		// previews as a bare grey line.
+		doc, err := os.ReadFile(indexPath)
+		if err != nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(injectMeta(doc, metaForPath(r, r.URL.Path)))
 	})
 
 	port := os.Getenv("PORT")
@@ -547,8 +766,10 @@ func main() {
 		port = "3000"
 	}
 
+	go cleanupVisitors()
+
 	log.Printf("listening on :%s", port)
-	if err := http.ListenAndServe(":"+port, corsMiddleware(mux)); err != nil {
+	if err := http.ListenAndServe(":"+port, corsMiddleware(securityHeadersMiddleware(rateLimitMiddleware(mux)))); err != nil {
 		log.Fatal(err)
 	}
 }
