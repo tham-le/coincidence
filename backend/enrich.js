@@ -15,7 +15,7 @@ const path = require('path');
 // Resolve next to this file, not the shell's working directory, so running
 // the script from the project root cannot create an empty database there.
 const db = new sqlite3.Database(path.join(__dirname, 'coincidence.db'));
-const UA = 'CoincidenceMap/1.0 (https://github.com/tham/coincidence; tham@kyber.tech)';
+const UA = 'CoincidenceMap/1.0 (+https://github.com/tham-le/coincidence)';
 const SPARQL_URL = 'https://query.wikidata.org/sparql';
 const WD_API = 'https://www.wikidata.org/w/api.php';
 

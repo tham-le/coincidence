@@ -16,7 +16,7 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
 const db = new sqlite3.Database(path.join(__dirname, 'coincidence.db'));
-const UA = 'CoincidenceMap/1.0 (https://github.com/tham/coincidence; tham@kyber.tech)';
+const UA = 'CoincidenceMap/1.0 (+https://github.com/tham-le/coincidence)';
 const SPARQL_URL = 'https://query.wikidata.org/sparql';
 const BATCH = 150;
 const PAUSE_MS = 1100;

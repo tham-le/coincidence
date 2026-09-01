@@ -7,7 +7,7 @@
 
 const axios = require('axios');
 
-const UA = 'CoincidenceMap/1.0 (https://github.com/tham/coincidence; tham@kyber.tech)';
+const UA = 'CoincidenceMap/1.0 (+https://github.com/tham-le/coincidence)';
 const SPARQL_URL = 'https://query.wikidata.org/sparql';
 const WP_REST = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
 
