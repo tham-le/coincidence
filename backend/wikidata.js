@@ -29,13 +29,39 @@ function parseTime(value, precision) {
   };
 }
 
-async function sparql(query, timeout = 120000) {
-  const res = await axios.get(SPARQL_URL, {
-    params: { query, format: 'json' },
-    headers: { 'User-Agent': UA, Accept: 'application/sparql-results+json' },
-    timeout,
-  });
-  return res.data.results.bindings;
+// The query service fails often under load: 502 and 504 when a query is heavy,
+// 429 when we have been asking too fast. Retrying here rather than at each call
+// site means one unlucky request cannot end a long harvest, which is what used
+// to happen: fetchFacts was the one call with no retry around it, and a single
+// 429 killed the whole run partway through.
+const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+
+async function sparql(query, timeout = 120000, attempts = 4) {
+  let backoff = 5000;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const res = await axios.get(SPARQL_URL, {
+        params: { query, format: 'json' },
+        headers: { 'User-Agent': UA, Accept: 'application/sparql-results+json' },
+        timeout,
+      });
+      return res.data.results.bindings;
+    } catch (e) {
+      const status = e.response?.status;
+      // A timeout or a dropped connection has no status and is worth retrying.
+      if (attempt >= attempts || (status && !RETRYABLE.has(status))) throw e;
+
+      let wait = backoff;
+      if (status === 429) {
+        // Being told to slow down is different from a server hiccup. Honour
+        // Retry-After when it is sent, and wait far longer regardless.
+        const after = parseInt(e.response.headers?.['retry-after'], 10);
+        wait = Number.isFinite(after) ? after * 1000 : Math.max(backoff, 60000);
+      }
+      await sleep(wait);
+      backoff = Math.min(backoff * 2, 120000);
+    }
+  }
 }
 
 // Facts for a known set of ids: dates, reach, birth-place coordinates and

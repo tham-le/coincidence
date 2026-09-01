@@ -28,7 +28,7 @@ const all = (sql, p = []) => new Promise((res, rej) => db.all(sql, p, (e, r) => 
 const get = (sql, p = []) => new Promise((res, rej) => db.get(sql, p, (e, r) => e ? rej(e) : res(r)));
 
 const ALIVE_BIRTH_CUTOFF = 1935;
-const PAUSE_MS = 1500;
+const PAUSE_MS = 4000;
 
 const ERAS = [
   [-800, 0], [0, 500], [500, 1000], [1000, 1400], [1400, 1600], [1600, 1800],
@@ -68,7 +68,7 @@ const isoYear = y => {
 // birth date before it can apply the continent filter. Naming the countries
 // makes the same question selective, and the query drops from a 504 to about
 // fifteen seconds.
-const COUNTRY_CHUNK = 22;
+const COUNTRY_CHUNK = 12;
 
 async function countriesOf(continentQid) {
   const bindings = await sparql(`
@@ -199,7 +199,16 @@ async function harvestPeople(known, countryMap) {
         continue;
       }
 
-      const facts = await fetchFacts(fresh);
+      // A failure here used to end the whole run. Losing one bucket is fine;
+      // the script is idempotent and a later pass picks it up.
+      let facts;
+      try {
+        facts = await fetchFacts(fresh);
+      } catch (e) {
+        console.log(`    ${from}..${to} ${c.name}: facts failed (${e.message}), skipping bucket`);
+        await sleep(10000);
+        continue;
+      }
       // Anything without a birth place gets the same outward walk the curated
       // seeding uses, which is what rescues most non-European figures.
       const incomplete = fresh.filter(id => {
@@ -241,7 +250,14 @@ async function harvestEvents(known, countryMap) {
       // Events carry P580/P582 and a location, which enrich_events.js already
       // knows how to read. Insert the shell and let that pass fill it in.
       let bucketAdded = 0;
-      const coords = await fetchEventPlaces(fresh);
+      let coords;
+      try {
+        coords = await fetchEventPlaces(fresh);
+      } catch (e) {
+        console.log(`    ${from}..${to} ${c.name}: event places failed (${e.message})`);
+        await sleep(10000);
+        continue;
+      }
       for (const id of fresh) {
         const c2 = coords.get(id);
         if (!c2) continue;
